@@ -1,0 +1,50 @@
+/* SelfSync plugin styles */
+
+.selfsync-view {
+  padding: 0.75rem 1rem;
+}
+
+.selfsync-status-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: var(--font-semibold);
+  margin-bottom: 0.75rem;
+}
+
+.selfsync-status-dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex: 0 0 auto;
+}
+
+.selfsync-status-dot.is-idle { background: var(--text-success, #3fb950); }
+.selfsync-status-dot.is-syncing { background: var(--text-accent); }
+.selfsync-status-dot.is-error { background: var(--text-error, #f85149); }
+.selfsync-status-dot.is-conflicts { background: var(--text-warning, #d29922); }
+
+.selfsync-section {
+  margin-top: 1rem;
+}
+
+.selfsync-section h4 {
+  margin: 0 0 0.35rem 0;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.selfsync-activity-log {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  max-height: 12rem;
+  overflow-y: auto;
+}
+
+.selfsync-empty {
+  color: var(--text-faint);
+  font-style: italic;
+}

@@ -1,0 +1,72 @@
+# 03 — Architecture
+
+## Component layout
+
+```
+Obsidian Plugin (TypeScript, esbuild)
+├─ UI: settings tab, setup wizard, status bar, "Sync now" command, conflict list
+├─ Sync Engine (platform-agnostic core)
+│   ├─ Change detector  (vault scan via DataAdapter: path, size, mtime, SHA-256)
+│   ├─ Local State DB   (last-synced snapshot per file: base for 3-way merge)
+│   ├─ Reconciler       (3-way diff → op list; conflict = keep-both)
+│   ├─ Journal          (crash-safe op queue; resume after kill)   ← NFR1
+│   └─ Transfer manager (chunked/resumable put/get, retries)
+├─ Crypto layer (WebCrypto)   ← optional E2EE, wraps blobs + path map
+├─ Remote Manifest/Index      ← the source of truth for "what exists remotely"
+├─ Backend abstraction  interface StorageBackend
+│   ├─ WebDavBackend   (Infomaniak kDrive)
+│   └─ CouchDbBackend  (blob store: one doc/attachment per file or chunk)
+└─ Git Backup module (DESKTOP ONLY, Node)  ← isomorphic-git, separate from sync
+```
+
+## Key idea: unified engine over dumb backends
+
+Everything above the `StorageBackend` line — change detection, the manifest,
+conflict handling, tombstones, and E2EE — is **backend-agnostic**. A backend only
+has to store, fetch, list, and delete opaque blobs (see `06-backends.md`). This
+means:
+
+- WebDAV and CouchDB behave **identically** from the user's perspective.
+- "Keep both" conflict handling and E2EE are implemented **once**.
+- Adding a future backend (e.g. S3) is a matter of implementing one small
+  interface.
+
+We deliberately do **not** rely on CouchDB's native replication/conflict
+resolution — with E2EE the content is opaque, so the server cannot merge it
+anyway (see `04-technical-decisions.md`, D4).
+
+## Platform boundaries
+
+- **Sync path** (all platforms): uses only the Obsidian `DataAdapter` for vault
+  I/O and **WebCrypto** for hashing/encryption. Both are available on mobile.
+- **Git layer** (desktop only): the only place Node/`isomorphic-git` is used;
+  gated by `Platform.isDesktopApp` and hidden on mobile.
+
+## Data flow (one sync cycle)
+
+1. **Trigger** fires (startup / interval / debounced change / manual / best-effort
+   quit).
+2. **Read remote manifest** (with its etag/rev) from the backend.
+3. **Scan local vault** via `DataAdapter` → current paths, sizes, mtimes, and
+   SHA-256 hashes (mtime used to skip re-hashing unchanged files).
+4. **Reconcile** three inputs — current local state, the last-synced **State DB**
+   snapshot (the merge base), and the **manifest** — into an ordered **op list**
+   (upload / download / delete / move / conflict-copy).
+5. **Journal** the op list before executing (crash safety).
+6. **Execute** ops through the transfer manager (encrypting/decrypting blobs if
+   E2EE is on), updating the manifest.
+7. **Commit manifest** with a conditional write (etag/rev). On conflict (another
+   device wrote first), re-read and re-reconcile.
+8. **Update State DB** to the new synced snapshot; clear the journal.
+
+See `05-sync-engine.md` for the reconciliation rules and crash-safety details.
+
+## Persistent state
+
+- **Local State DB** — per-file last-synced snapshot (merge base). Storage choice
+  (IndexedDB vs plugin-data JSON) is spike **S3** in `09-roadmap.md`.
+- **Journal** — pending/incomplete op list for resume-on-startup.
+- **Remote manifest** — authoritative map of logical path → blob; lives on the
+  backend, encrypted when E2EE is on.
+- **Plugin settings** — backend choice, credentials, E2EE toggle + verifier,
+  trigger config, exclude globs, Git settings.

@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Project-local portable toolchain (Node.js)
+.tools/
+
+# Build output (attached to GitHub releases, not committed)
+main.js
+*.js.map
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Test / coverage
+coverage/
+
+# Local env
+.env
+.env.local

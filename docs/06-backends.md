@@ -1,0 +1,90 @@
+# 06 — Backends
+
+A backend is a **dumb blob store**. All intelligence (diff, conflicts,
+tombstones, encryption) lives in the engine above it (`05-sync-engine.md`).
+
+## The `StorageBackend` contract
+
+```ts
+interface RemoteEntry {
+  key: string;        // opaque storage key
+  size: number;
+  etag?: string;      // version token for optimistic concurrency, if supported
+  mtime?: number;
+}
+
+interface StorageBackend {
+  /** Validate credentials/endpoint; throw with a clear message on failure. */
+  testConnection(): Promise<void>;
+
+  /** List all keys under the sync root (for GC and manifest recovery). */
+  list(): Promise<RemoteEntry[]>;
+
+  /** Fetch a blob by key. */
+  read(key: string): Promise<ArrayBuffer>;
+
+  /**
+   * Store a blob. If `prevEtag` is given and the backend supports conditional
+   * writes, the write must fail if the current etag differs (optimistic
+   * concurrency). Returns the new etag/rev.
+   */
+  write(key: string, data: ArrayBuffer, prevEtag?: string): Promise<string>;
+
+  /** Delete a blob (idempotent). */
+  remove(key: string, prevEtag?: string): Promise<void>;
+
+  /** Feature flags the engine adapts to. */
+  capabilities(): { conditionalWrites: boolean };
+}
+```
+
+The engine stores two kinds of objects through this interface: **content blobs**
+(one per file, or per chunk for large files) and the **manifest** (a single
+well-known key). Conditional writes matter mainly for the manifest, to detect
+concurrent writers (`05-sync-engine.md`).
+
+## WebDAV backend (primary — Infomaniak kDrive)
+
+- Maps blob keys to files under a configured sync-root folder on kDrive.
+- Uses `PROPFIND` for `list`, `GET` for `read`, `PUT` for `write`, `DELETE` for
+  `remove`.
+- **Conditional writes:** WebDAV supports `If-Match` with ETags. Whether kDrive
+  returns stable, usable ETags and honors `If-Match` is **spike S2**. If it does
+  not, fall back to: hash-compare before write + a small **lock object** in the
+  sync root to serialize manifest updates.
+- Runs on **all platforms** (mobile-safe: uses Obsidian's `requestUrl` / fetch,
+  no Node).
+- Transport encryption is HTTPS (kDrive). At-rest confidentiality comes from E2EE
+  when enabled (`07-encryption.md`).
+
+## CouchDB backend (self-hosted alternative)
+
+- Used as a **blob store**, not for native replication (see D4).
+- Each blob is a CouchDB document (with the content as an attachment, or chunked
+  across documents for large files). The document `_rev` serves as the `etag` for
+  conditional writes — CouchDB has **first-class conditional writes**
+  (`capabilities().conditionalWrites = true`).
+- `list` via an `_all_docs` query; `read`/`write`/`remove` via the document API.
+- One database per vault.
+- Runs on **all platforms** over HTTP(S).
+
+### Docker deployment
+
+Ship a documented `docker-compose.yml` in the repo:
+
+- A single `couchdb` service (persistent volume for data).
+- A TLS-terminating reverse proxy (Caddy or Traefik) in front for **encrypted
+  transport** — CouchDB itself should not be exposed as plain HTTP over the
+  internet.
+- HTTP basic auth (optionally a per-device user).
+- Notes on backups of the CouchDB volume, and on setting `single_node=true` for a
+  simple single-instance setup.
+
+The goal is a copy-paste setup that satisfies the "simple setup" requirement
+(NFR6) for self-hosters.
+
+## Adding future backends
+
+Because everything above the interface is backend-agnostic, a new backend (e.g.
+S3/MinIO) only needs to implement `StorageBackend`. It automatically inherits
+conflict handling, tombstones, chunking, and E2EE.
