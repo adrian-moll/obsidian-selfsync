@@ -14,14 +14,18 @@
 
 ## Milestones
 
-- **M0 — Scaffold.** Plugin skeleton, settings tab, `StorageBackend` +
+- **M0 — Scaffold. ✅ DONE.** Plugin skeleton, settings tab, `StorageBackend` +
   **`VaultAdapter`** interfaces, Local State DB, manifest format, journal;
   ribbon-icon + Sync-view skeleton; **L1 unit-test harness** (Vitest). No network
   yet.
-- **M1 — WebDAV end-to-end (desktop, no encryption).** Full engine against kDrive
-  WebDAV: create/edit/delete/rename, manifest, keep-both conflicts. Prove the
-  reconciliation rules with the **L3 two-device simulation**; stand up **L2**
-  WebDAV container contract tests.
+- **M1 — WebDAV end-to-end (desktop, no encryption). ✅ DONE.** Full engine against
+  kDrive WebDAV: create/edit/delete/rename, manifest with optimistic concurrency,
+  keep-both conflicts. Proven by the **L3 two-device simulation** (in-memory) and a
+  **live end-to-end sync against real kDrive**. Backend validated by the shared
+  `StorageBackend` contract (in-memory + live kDrive). 27 tests green.
+  *Remaining for CI parity:* the **L2 WebDAV container** test (needs Docker) so CI
+  can run backend tests without kDrive credentials; currently CI relies on the
+  in-memory contract + sim, with the live kDrive tests gated/skipped.
 - **M2 — Mobile hardening.** Startup reconcile, interval, debounced change,
   best-effort quit/visibility flush, resumable/chunked transfers. Wire real status
   into the ribbon/status-bar/Notices. Test on iPad and Android against kDrive. This
