@@ -6,8 +6,8 @@ export type BackendType = "webdav" | "couchdb";
 
 export interface SelfSyncSettings {
   backendType: BackendType;
-  webdav: { url: string; username: string };
-  couchdb: { url: string; username: string; database: string };
+  webdav: { url: string; username: string; password: string; rootDir: string };
+  couchdb: { url: string; username: string; password: string; database: string };
   encryptionEnabled: boolean;
   syncOnStartup: boolean;
   syncIntervalMinutes: number;
@@ -19,8 +19,8 @@ export interface SelfSyncSettings {
 
 export const DEFAULT_SETTINGS: SelfSyncSettings = {
   backendType: "webdav",
-  webdav: { url: "", username: "" },
-  couchdb: { url: "", username: "", database: "obsidian" },
+  webdav: { url: "", username: "", password: "", rootDir: "selfsync" },
+  couchdb: { url: "", username: "", password: "", database: "obsidian" },
   encryptionEnabled: true,
   syncOnStartup: true,
   syncIntervalMinutes: 5,
@@ -80,6 +80,25 @@ export class SelfSyncSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }),
       );
+      new Setting(containerEl)
+        .setName("WebDAV password")
+        .setDesc("For kDrive, use an app-specific password (not your login password).")
+        .addText((t) => {
+          t.inputEl.type = "password";
+          t.setValue(this.plugin.settings.webdav.password).onChange(async (v) => {
+            this.plugin.settings.webdav.password = v;
+            await this.plugin.saveSettings();
+          });
+        });
+      new Setting(containerEl)
+        .setName("Sync folder")
+        .setDesc("Folder on the WebDAV server that holds the synced data.")
+        .addText((t) =>
+          t.setValue(this.plugin.settings.webdav.rootDir).onChange(async (v) => {
+            this.plugin.settings.webdav.rootDir = v.trim() || "selfsync";
+            await this.plugin.saveSettings();
+          }),
+        );
     } else {
       new Setting(containerEl)
         .setName("CouchDB URL")

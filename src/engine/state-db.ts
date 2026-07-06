@@ -15,6 +15,49 @@ export interface StateStore {
   toMap(): Promise<Map<string, StateEntry>>;
 }
 
+/**
+ * StateStore that mirrors entries in memory and persists the whole snapshot via
+ * an injected callback (in the plugin: the plugin's own data file). Simple and
+ * correct for M1; a chunked/IndexedDB store is a later optimization (spike S3).
+ */
+export class JsonStateStore implements StateStore {
+  private readonly entries: Map<string, StateEntry>;
+
+  constructor(
+    initial: StateEntry[],
+    private readonly persist: (all: StateEntry[]) => Promise<void>,
+  ) {
+    this.entries = new Map(initial.map((e) => [e.path, { ...e }]));
+  }
+
+  private snapshot(): StateEntry[] {
+    return [...this.entries.values()].map((e) => ({ ...e }));
+  }
+
+  async all(): Promise<StateEntry[]> {
+    return this.snapshot();
+  }
+
+  async get(path: string): Promise<StateEntry | undefined> {
+    const e = this.entries.get(path);
+    return e ? { ...e } : undefined;
+  }
+
+  async put(entry: StateEntry): Promise<void> {
+    this.entries.set(entry.path, { ...entry });
+    await this.persist(this.snapshot());
+  }
+
+  async delete(path: string): Promise<void> {
+    this.entries.delete(path);
+    await this.persist(this.snapshot());
+  }
+
+  async toMap(): Promise<Map<string, StateEntry>> {
+    return new Map([...this.entries].map(([k, v]) => [k, { ...v }]));
+  }
+}
+
 export class MemoryStateStore implements StateStore {
   private readonly entries = new Map<string, StateEntry>();
 

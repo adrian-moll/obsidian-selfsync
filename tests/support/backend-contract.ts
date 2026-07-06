@@ -1,0 +1,59 @@
+/**
+ * Shared StorageBackend conformance suite. Run against every backend (in-memory
+ * always; real WebDAV/CouchDB when credentials/containers are available) so they
+ * all behave identically for the engine above them (docs/06-backends.md,
+ * docs/12-testing.md).
+ */
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { ConditionalWriteError, type StorageBackend } from "../../src/backend/storage-backend.js";
+import { utf8 } from "../../src/backend/http.js";
+
+export interface ContractHarness {
+  backend: StorageBackend;
+  /** Namespaces a key so runs don't collide on a shared backend. */
+  key: (name: string) => string;
+  cleanup: () => Promise<void>;
+}
+
+export function runBackendContract(name: string, setup: () => Promise<ContractHarness>): void {
+  describe(`StorageBackend contract: ${name}`, () => {
+    let h: ContractHarness;
+    beforeAll(async () => {
+      h = await setup();
+    });
+    afterAll(async () => {
+      await h?.cleanup();
+    });
+
+    it("write → read round-trips and returns an etag", async () => {
+      const k = h.key("rt.txt");
+      const etag = await h.backend.write(k, utf8.encode("hello"));
+      expect(typeof etag).toBe("string");
+      expect(utf8.decode(await h.backend.read(k))).toBe("hello");
+    });
+
+    it("list surfaces a written key", async () => {
+      const k = h.key("listed.txt");
+      await h.backend.write(k, utf8.encode("x"));
+      const keys = (await h.backend.list()).map((e) => e.key);
+      expect(keys).toContain(k);
+    });
+
+    it("conditional write: correct etag overwrites, stale etag throws", async () => {
+      const k = h.key("cond.txt");
+      const etag1 = await h.backend.write(k, utf8.encode("v1"));
+      const etag2 = await h.backend.write(k, utf8.encode("v2"), etag1);
+      expect(utf8.decode(await h.backend.read(k))).toBe("v2");
+      expect(etag2).not.toBe(etag1);
+      await expect(h.backend.write(k, utf8.encode("v3"), etag1)).rejects.toBeInstanceOf(ConditionalWriteError);
+    });
+
+    it("remove deletes the key", async () => {
+      const k = h.key("del.txt");
+      await h.backend.write(k, utf8.encode("bye"));
+      await h.backend.remove(k);
+      const keys = (await h.backend.list()).map((e) => e.key);
+      expect(keys).not.toContain(k);
+    });
+  });
+}

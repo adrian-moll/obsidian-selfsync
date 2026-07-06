@@ -17,6 +17,12 @@ export interface BackendCapabilities {
   conditionalWrites: boolean;
 }
 
+/** A blob plus its current version token, as returned by readWithMeta. */
+export interface ReadResult {
+  data: ArrayBuffer;
+  etag?: string;
+}
+
 /** Thrown when a conditional write fails because the etag no longer matches. */
 export class ConditionalWriteError extends Error {
   constructor(public readonly key: string) {
@@ -29,6 +35,8 @@ export interface StorageBackend {
   testConnection(): Promise<void>;
   list(): Promise<RemoteEntry[]>;
   read(key: string): Promise<ArrayBuffer>;
+  /** Read a blob together with its etag, or null if the key does not exist. */
+  readWithMeta(key: string): Promise<ReadResult | null>;
   /**
    * Store a blob. If `prevEtag` is provided and the backend supports conditional
    * writes, the write MUST fail (throw ConditionalWriteError) if the current
@@ -72,6 +80,11 @@ export class MemoryBackend implements StorageBackend {
     const b = this.blobs.get(key);
     if (!b) throw new Error(`Not found: ${key}`);
     return b.data.slice(0);
+  }
+
+  async readWithMeta(key: string): Promise<ReadResult | null> {
+    const b = this.blobs.get(key);
+    return b ? { data: b.data.slice(0), etag: b.etag } : null;
   }
 
   async write(key: string, data: ArrayBuffer, prevEtag?: string): Promise<string> {
