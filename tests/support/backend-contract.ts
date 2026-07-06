@@ -56,6 +56,18 @@ export function runBackendContract(name: string, setup: () => Promise<ContractHa
       expect(keys).not.toContain(k);
     });
 
+    it("readWithMeta's etag is usable for a conditional overwrite (no 412)", async () => {
+      // This is exactly the manifest commit invariant: read → get etag →
+      // conditional write with that etag must succeed. Regression guard for the
+      // kDrive 412 bug where read/write etags disagreed.
+      const k = h.key("meta.txt");
+      await h.backend.write(k, utf8.encode("v1"));
+      const r = await h.backend.readWithMeta(k);
+      expect(r).not.toBeNull();
+      await h.backend.write(k, utf8.encode("v2"), r!.etag); // must NOT throw 412
+      expect(utf8.decode(await h.backend.read(k))).toBe("v2");
+    });
+
     it("move relocates a blob", async () => {
       const from = h.key("mv-from.txt");
       const to = h.key("mv-to.txt");

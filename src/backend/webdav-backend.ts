@@ -192,8 +192,11 @@ export class WebDavBackend implements StorageBackend {
     if (res.status < 200 || res.status >= 300) {
       throw new Error(`WebDAV GET ${key} failed: HTTP ${res.status}`);
     }
-    // GET may or may not include an ETag header; fall back to PROPFIND.
-    const etag = res.headers["etag"] ? decodeEntities(res.headers["etag"]) : ((await this.fetchEtag(key)) ?? undefined);
+    // Always source the etag from PROPFIND <getetag> — the strong value that
+    // If-Match compares against (validated in spike S2). A GET response's ETag
+    // header is unreliable across servers/clients (e.g. kDrive via Obsidian's
+    // requestUrl returns a different value), which caused 412s on manifest commit.
+    const etag = (await this.fetchEtag(key)) ?? undefined;
     return { data: res.body, etag };
   }
 
