@@ -64,7 +64,11 @@ behind the UI, release, and testing items woven through these milestones.
   `visibilitychange`, and `blur` fire on iOS/Android, and how much flush time is
   available. The design survives none firing (reconcile-on-startup); this only
   tunes the accelerators.
-- **S2 — kDrive WebDAV concurrency.** Verify Infomaniak returns usable ETags and
-  honors `If-Match`. If not, fall back to hash-compare + a manifest lock object.
+- **S2 — kDrive WebDAV concurrency. ✅ RESOLVED (2026-07-06).** A live probe
+  (`scripts/s2-webdav-probe.mjs`) confirmed Infomaniak kDrive returns strong ETags
+  (via `PROPFIND`, XML-entity-encoded → must decode) and honors `If-Match` /
+  `If-None-Match: *`. Caveat: `PUT` returns no ETag header, so a follow-up
+  `PROPFIND` is needed after each write. ⇒ `conditionalWrites = true`; no
+  lock-object fallback required for kDrive. See `06-backends.md`.
 - **S3 — State DB storage on mobile.** Choose IndexedDB vs plugin-data JSON for the
   local snapshot, based on size/perf on large vaults.

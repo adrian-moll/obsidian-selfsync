@@ -48,10 +48,25 @@ concurrent writers (`05-sync-engine.md`).
 - Maps blob keys to files under a configured sync-root folder on kDrive.
 - Uses `PROPFIND` for `list`, `GET` for `read`, `PUT` for `write`, `DELETE` for
   `remove`.
-- **Conditional writes:** WebDAV supports `If-Match` with ETags. Whether kDrive
-  returns stable, usable ETags and honors `If-Match` is **spike S2**. If it does
-  not, fall back to: hash-compare before write + a small **lock object** in the
-  sync root to serialize manifest updates.
+- **Conditional writes: confirmed usable on kDrive (spike S2, 2026-07-06).** A
+  live probe against a real kDrive endpoint verified:
+  - Basic auth works with an **app-specific password** (the normal login password
+    is rejected); `PROPFIND` returns `207`.
+  - `PROPFIND` yields **strong** ETags via `<getetag>` — but XML-entity-encoded
+    (`&quot;…&quot;`), so the value **must be decoded** before use as `If-Match`.
+  - `If-Match` with the correct ETag succeeds (`204`); with a stale ETag it is
+    rejected (`412`). `If-None-Match: *` gives create-only semantics (`412` on
+    overwrite).
+  - **`PUT` does NOT return an ETag header** → after every upload the backend must
+    issue a lightweight follow-up `PROPFIND` to learn the new ETag before
+    recording it in the manifest (one extra round-trip per write).
+  ⇒ `capabilities().conditionalWrites = true` for kDrive WebDAV; the manifest
+  optimistic-concurrency path is used directly (no lock-object fallback needed).
+- **Fallback (other WebDAV servers):** for backends that lack usable ETags/
+  `If-Match`, fall back to hash-compare before write + a small **lock object** in
+  the sync root to serialize manifest updates.
+- The probe lives at `scripts/s2-webdav-probe.mjs` and can be re-run against any
+  WebDAV endpoint.
 - Runs on **all platforms** (mobile-safe: uses Obsidian's `requestUrl` / fetch,
   no Node).
 - Transport encryption is HTTPS (kDrive). At-rest confidentiality comes from E2EE
