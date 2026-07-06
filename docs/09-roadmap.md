@@ -32,10 +32,19 @@
   support (per-segment encoding, `ensureParents`/`MKCOL`, recursive `list`, `MOVE`);
   `StorageBackend.move`; manifest under `.selfsync/` in mirror mode. Default
   encryption OFF. `MOVE` confirmed against real kDrive. 35 tests green.
-- **M2 — Mobile hardening.** Startup reconcile, interval, debounced change,
-  best-effort quit/visibility flush, resumable/chunked transfers. Wire real status
-  into the ribbon/status-bar/Notices. Test on iPad and Android against kDrive. This
-  is where the primary past failure gets fixed.
+- **M2 — Mobile hardening. ◑ IN PROGRESS.**
+  - **Done:** single-flight **`SyncScheduler`** (coalesces overlapping requests,
+    debounces file changes) + all four triggers wired (startup reconcile via
+    `onLayoutReady`, configurable interval, debounced vault-change, best-effort
+    `quit`/`visibilitychange`/`blur`); **live status** via `SyncStore` → ribbon,
+    status bar, and the Sync view (last sync, backend, layout, activity log,
+    conflicts, Sync-now button). 4 scheduler unit tests; 40 total green.
+  - **Crash-safety (NFR1)** is already provided by the engine: atomic conditional
+    manifest commit + reconcile-on-startup + "absence is never a deletion". A
+    *persistent* journal (faster resume) is deferred — an optimization, not
+    required for correctness.
+  - **Deferred:** resumable/chunked transfers for very large binaries; the **L4**
+    real-device acceptance pass on iPad + Android against kDrive (manual).
 - **M3 — E2EE.** Configurable per-backend encryption, path encryption, key
   verifier (with L1/L3 coverage).
 - **M4 — CouchDB backend.** Implement the backend + ship `docker-compose.yml` and

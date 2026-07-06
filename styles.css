@@ -48,3 +48,17 @@
   color: var(--text-faint);
   font-style: italic;
 }
+
+.selfsync-section ul {
+  margin: 0.2rem 0 0 1rem;
+  padding: 0;
+  font-size: var(--font-ui-small);
+}
+
+.selfsync-section button {
+  margin-top: 0.25rem;
+}
+
+.selfsync-error {
+  color: var(--text-error, #f85149);
+}

@@ -134,3 +134,8 @@ the app). Guarantees:
 - **Best-effort on background/quit** — via `workspace.on('quit')`,
   `visibilitychange`, and `blur`; treated as accelerators only (spike S1).
 - **Manual** — the "Sync now" command.
+
+All triggers funnel through a single-flight **`SyncScheduler`**
+(`src/engine/scheduler.ts`): at most one sync runs at a time, overlapping requests
+coalesce into one follow-up run, and file-change triggers are debounced. This
+keeps the four triggers from overlapping or thrashing (M2).

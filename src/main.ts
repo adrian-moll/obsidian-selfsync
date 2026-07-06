@@ -1,35 +1,49 @@
 /**
- * SelfSync plugin entry point (M1).
+ * SelfSync plugin entry point (M2).
  *
- * Wires the engine to a real backend: on "Sync now" it builds the configured
- * backend (WebDAV in M1), scans the vault via the Obsidian adapter, runs a full
- * sync cycle, and reflects progress in the ribbon/status bar/Notices. Sync state
- * is persisted in the plugin's data file alongside settings.
+ * Wires the sync engine to a real backend and drives it from the trigger model
+ * (D5): sync on startup, on a configurable interval, debounced on file change,
+ * and best-effort on app background/quit. All triggers funnel through a
+ * single-flight SyncScheduler so they never overlap. Live status flows through a
+ * SyncStore into the ribbon/status bar and the Sync view.
  */
 import { Notice, Platform, Plugin } from "obsidian";
 import { DEFAULT_SETTINGS, type SelfSyncSettings, SelfSyncSettingTab } from "./settings.js";
 import { SelfSyncView, VIEW_TYPE_SELFSYNC } from "./ui/sync-view.js";
 import { StatusController } from "./ui/status.js";
+import { SyncStore } from "./ui/sync-store.js";
 import { ObsidianVaultAdapter } from "./vault/obsidian-vault-adapter.js";
 import { JsonStateStore } from "./engine/state-db.js";
 import { SyncEngine } from "./engine/engine.js";
+import { SyncScheduler } from "./engine/scheduler.js";
 import { MirrorNaming, OpaqueNaming } from "./engine/naming.js";
 import { WebDavBackend } from "./backend/webdav-backend.js";
 import { obsidianHttp } from "./backend/obsidian-http.js";
 import type { StorageBackend } from "./backend/storage-backend.js";
-import type { StateEntry } from "./types.js";
+import type { Op, StateEntry } from "./types.js";
 
 interface PersistedData {
   settings: SelfSyncSettings;
   syncState: StateEntry[];
 }
 
+const CHANGE_DEBOUNCE_MS = 3000;
+
+function summarizeOps(ops: Op[]): string {
+  const counts: Record<string, number> = {};
+  for (const o of ops) counts[o.kind] = (counts[o.kind] ?? 0) + 1;
+  return Object.entries(counts)
+    .map(([k, n]) => `${n} ${k}`)
+    .join(", ");
+}
+
 export default class SelfSyncPlugin extends Plugin {
   settings!: SelfSyncSettings;
   private syncState: StateEntry[] = [];
   private stateStore!: JsonStateStore;
+  private store = new SyncStore();
   private status?: StatusController;
-  private syncing = false;
+  private scheduler!: SyncScheduler;
 
   async onload(): Promise<void> {
     await this.loadPersisted();
@@ -37,19 +51,58 @@ export default class SelfSyncPlugin extends Plugin {
       this.syncState = all;
       await this.savePersisted();
     });
+    this.scheduler = new SyncScheduler((trigger) => this.runSync(trigger));
 
-    this.registerView(VIEW_TYPE_SELFSYNC, (leaf) => new SelfSyncView(leaf));
+    this.registerView(
+      VIEW_TYPE_SELFSYNC,
+      (leaf) => new SelfSyncView(leaf, this.store, () => void this.scheduler.trigger("manual")),
+    );
 
-    const ribbonEl = this.addRibbonIcon("refresh-cw", "SelfSync", () => {
-      void this.activateView();
-    });
+    const ribbonEl = this.addRibbonIcon("refresh-cw", "SelfSync", () => void this.activateView());
     const statusBarEl = Platform.isDesktopApp ? this.addStatusBarItem() : undefined;
-    this.status = new StatusController({ ribbonEl, statusBarEl });
+    this.status = new StatusController(ribbonEl, statusBarEl, this.store);
+    this.store.update({ backendLabel: this.backendLabel(), encrypted: this.settings.encryptionEnabled });
 
     this.addCommand({ id: "open-panel", name: "Open sync panel", callback: () => void this.activateView() });
-    this.addCommand({ id: "sync-now", name: "Sync now", callback: () => void this.syncNow() });
+    this.addCommand({ id: "sync-now", name: "Sync now", callback: () => void this.scheduler.trigger("manual") });
 
     this.addSettingTab(new SelfSyncSettingTab(this.app, this));
+
+    // Set up triggers once the workspace is ready (avoids the initial file-load
+    // event burst and premature syncing).
+    this.app.workspace.onLayoutReady(() => this.setupTriggers());
+  }
+
+  onunload(): void {
+    this.scheduler?.dispose();
+    this.status?.dispose();
+  }
+
+  private setupTriggers(): void {
+    // Startup reconcile — the backbone (NFR1).
+    if (this.settings.syncOnStartup) void this.scheduler.trigger("startup");
+
+    // Periodic interval.
+    if (this.settings.syncIntervalMinutes > 0) {
+      this.scheduler.startInterval("interval", this.settings.syncIntervalMinutes * 60_000);
+    }
+
+    // Debounced on file change.
+    const onChange = () => {
+      if (this.settings.syncOnFileChange) this.scheduler.requestDebounced("change", CHANGE_DEBOUNCE_MS);
+    };
+    this.registerEvent(this.app.vault.on("modify", onChange));
+    this.registerEvent(this.app.vault.on("create", onChange));
+    this.registerEvent(this.app.vault.on("delete", onChange));
+    this.registerEvent(this.app.vault.on("rename", onChange));
+
+    // Best-effort flush on quit / backgrounding (not guaranteed to run — the
+    // startup reconcile is what guarantees convergence).
+    this.registerEvent(this.app.workspace.on("quit", () => void this.scheduler.trigger("quit")));
+    this.registerDomEvent(document, "visibilitychange", () => {
+      if (document.hidden) void this.scheduler.trigger("background");
+    });
+    this.registerDomEvent(window, "blur", () => void this.scheduler.trigger("background"));
   }
 
   async activateView(): Promise<void> {
@@ -65,13 +118,16 @@ export default class SelfSyncPlugin extends Plugin {
     workspace.revealLeaf(leaf);
   }
 
+  private backendLabel(): string {
+    const s = this.settings;
+    if (s.backendType === "webdav") return s.webdav.url ? "WebDAV" : "WebDAV (not configured)";
+    return "CouchDB";
+  }
+
   private buildBackend(): StorageBackend | null {
     const s = this.settings;
     if (s.backendType === "webdav") {
-      if (!s.webdav.url) {
-        new Notice("SelfSync: configure the WebDAV URL in settings first.");
-        return null;
-      }
+      if (!s.webdav.url) return null;
       return new WebDavBackend({
         baseUrl: s.webdav.url,
         username: s.webdav.username,
@@ -80,19 +136,29 @@ export default class SelfSyncPlugin extends Plugin {
         http: obsidianHttp,
       });
     }
-    new Notice("SelfSync: the CouchDB backend is not implemented yet (M4).");
-    return null;
+    return null; // CouchDB backend is M4
   }
 
-  async syncNow(): Promise<void> {
-    if (this.syncing) return;
+  /** One sync cycle, invoked only via the scheduler (single-flight). */
+  private async runSync(trigger: string): Promise<void> {
+    const encrypted = this.settings.encryptionEnabled;
     const backend = this.buildBackend();
-    if (!backend) return;
+    if (!backend) {
+      this.store.update({ status: "idle", detail: "Not configured", backendLabel: this.backendLabel() });
+      if (trigger === "manual") new Notice("SelfSync: configure the backend in settings first.");
+      return;
+    }
 
-    this.syncing = true;
-    this.status?.set("syncing", "SelfSync: syncing…");
+    this.store.update({
+      status: "syncing",
+      detail: `Syncing… (${trigger})`,
+      backendLabel: this.backendLabel(),
+      encrypted,
+      lastError: null,
+    });
+
     try {
-      const naming = this.settings.encryptionEnabled ? new OpaqueNaming() : new MirrorNaming();
+      const naming = encrypted ? new OpaqueNaming() : new MirrorNaming();
       const engine = new SyncEngine({
         vault: new ObsidianVaultAdapter(this.app),
         backend,
@@ -101,22 +167,33 @@ export default class SelfSyncPlugin extends Plugin {
         naming,
       });
       const res = await engine.sync({ timestampIso: new Date().toISOString(), useMtimeShortcut: true });
+      const nowIso = new Date().toISOString();
 
       if (res.conflict) {
-        this.status?.set("idle", "SelfSync: will retry");
-        new Notice("SelfSync: another device updated the remote first — will retry on the next sync.");
-      } else if (res.ops.some((o) => o.kind === "conflict")) {
-        this.status?.set("conflicts", "SelfSync: conflicts");
-        new Notice("SelfSync: sync complete with conflict copies — see the Sync panel.");
-      } else {
-        this.status?.set("idle", "SelfSync: idle");
-        new Notice(res.ops.length ? `SelfSync: synced ${res.ops.length} change(s).` : "SelfSync: up to date.");
+        this.store.update({ status: "idle", detail: "Will retry (remote changed)", lastSyncIso: nowIso });
+        this.store.log("Remote changed mid-sync — will retry on next trigger");
+        return;
+      }
+
+      const conflictPaths = res.ops
+        .filter((o): o is Extract<Op, { kind: "conflict" }> => o.kind === "conflict")
+        .map((o) => o.conflictCopyPath);
+
+      this.store.update({
+        status: conflictPaths.length ? "conflicts" : "idle",
+        detail: conflictPaths.length ? `${conflictPaths.length} conflict(s)` : "Idle",
+        lastSyncIso: nowIso,
+        conflicts: conflictPaths,
+      });
+      this.store.log(res.ops.length ? `Synced: ${summarizeOps(res.ops)}` : "Up to date");
+      if (conflictPaths.length) {
+        new Notice(`SelfSync: ${conflictPaths.length} conflict copy(ies) created — see the Sync panel.`);
       }
     } catch (e) {
-      this.status?.set("error", "SelfSync: error");
-      new Notice("SelfSync error: " + (e instanceof Error ? e.message : String(e)));
-    } finally {
-      this.syncing = false;
+      const msg = e instanceof Error ? e.message : String(e);
+      this.store.update({ status: "error", detail: "Error", lastError: msg });
+      this.store.log("Error: " + msg);
+      if (trigger === "manual") new Notice("SelfSync error: " + msg);
     }
   }
 
@@ -136,7 +213,6 @@ export default class SelfSyncPlugin extends Plugin {
       this.settings = this.mergeSettings(raw.settings);
       this.syncState = Array.isArray(raw.syncState) ? raw.syncState : [];
     } else {
-      // Legacy (M0) shape: data.json held settings directly.
       this.settings = this.mergeSettings(raw as Partial<SelfSyncSettings> | null);
       this.syncState = [];
     }
@@ -151,6 +227,7 @@ export default class SelfSyncPlugin extends Plugin {
 
   /** Called by the settings tab after edits. */
   async saveSettings(): Promise<void> {
+    this.store.update({ backendLabel: this.backendLabel(), encrypted: this.settings.encryptionEnabled });
     await this.savePersisted();
   }
 }
