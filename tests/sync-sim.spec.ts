@@ -6,28 +6,8 @@
  * backends via the contract/live tests.
  */
 import { describe, expect, it } from "vitest";
-import { MemoryBackend, type StorageBackend } from "../src/backend/storage-backend.js";
-import { MemoryVaultAdapter } from "../src/vault/memory-vault-adapter.js";
-import { MemoryStateStore } from "../src/engine/state-db.js";
-import { SyncEngine } from "../src/engine/engine.js";
-
-const enc = (s: string): ArrayBuffer => {
-  const v = new TextEncoder().encode(s);
-  const b = new ArrayBuffer(v.byteLength);
-  new Uint8Array(b).set(v);
-  return b;
-};
-const dec = (b: ArrayBuffer): string => new TextDecoder().decode(b);
-
-function makeDevice(backend: StorageBackend, id: string) {
-  const vault = new MemoryVaultAdapter();
-  const engine = new SyncEngine({ vault, backend, state: new MemoryStateStore(), deviceId: id });
-  let n = 0;
-  return {
-    vault,
-    sync: () => engine.sync({ timestampIso: `2026-01-01T00-00-${String(n++).padStart(2, "0")}Z` }),
-  };
-}
+import { MemoryBackend } from "../src/backend/storage-backend.js";
+import { dec, enc, makeDevice } from "./support/devices.js";
 
 /** Two devices with note.md ("hello") synced on both. */
 async function bootstrap() {
