@@ -82,7 +82,8 @@ For each logical path, compare **local (L)**, **base (B)**, **remote/manifest (R
 | L changed **and** R changed, `hash(L) != hash(R)` | **Conflict → keep both** |
 | L changed **and** R changed, `hash(L) == hash(R)` | Converged → update base only |
 | L deleted, R == B | **Tombstone in manifest + remove blob** |
-| R tombstoned, L == B | **Delete locally** |
+| R **tombstoned** (explicit `deleted:true`), L == B | **Delete locally** |
+| R **absent** (no entry), L present | **(Re)upload** — absence is never a deletion (NFR2; safe across manifest resets / layout changes) |
 | L deleted **and** R deleted | Reconcile base to deleted; no-op |
 | L deleted, R changed | **Conflict → restore R as conflict copy** (safety) |
 | new path, hash matches an existing tombstoned/removed path | **Rename/move** (rewrite manifest key, no re-upload) |

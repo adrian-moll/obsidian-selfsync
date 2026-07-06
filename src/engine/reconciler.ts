@@ -36,10 +36,15 @@ function baseHashOf(input: ReconcileInput, path: string): string | null {
   return b && !b.deleted ? b.contentHash : null;
 }
 
-/** Hash on the remote, or null if absent/tombstoned. */
-function remoteHashOf(input: ReconcileInput, path: string): string | null {
+/** The remote state for a path, distinguishing present / tombstoned / absent. */
+function remoteStateOf(
+  input: ReconcileInput,
+  path: string,
+): { present: boolean; tombstoned: boolean; hash: string | null } {
   const r = input.remote.entries[path];
-  return r && !r.deleted ? r.contentHash : null;
+  if (!r) return { present: false, tombstoned: false, hash: null };
+  if (r.deleted) return { present: false, tombstoned: true, hash: null };
+  return { present: true, tombstoned: false, hash: r.contentHash };
 }
 
 export function reconcile(input: ReconcileInput, opts: ReconcileOptions): Op[] {
@@ -54,51 +59,50 @@ export function reconcile(input: ReconcileInput, opts: ReconcileOptions): Op[] {
   for (const path of paths) {
     const lHash = localHashOf(input, path);
     const bHash = baseHashOf(input, path);
-    const rHash = remoteHashOf(input, path);
+    const remote = remoteStateOf(input, path);
 
-    const localChanged = lHash !== bHash;
-    const remoteChanged = rHash !== bHash;
+    if (remote.present) {
+      const rHash = remote.hash; // non-null when present
+      const localChanged = lHash !== bHash;
+      const remoteChanged = rHash !== bHash;
 
-    // Nothing changed on either side → no-op.
-    if (!localChanged && !remoteChanged) continue;
-
-    // Only local changed.
-    if (localChanged && !remoteChanged) {
-      ops.push(
-        lHash !== null
-          ? { kind: "upload", path }
-          : { kind: "deleteRemote", path },
-      );
+      if (!localChanged && !remoteChanged) continue; // in sync
+      if (localChanged && !remoteChanged) {
+        // Local edited (upload) or locally deleted a still-synced file (tombstone).
+        ops.push(lHash !== null ? { kind: "upload", path } : { kind: "deleteRemote", path });
+        continue;
+      }
+      if (!localChanged && remoteChanged) {
+        ops.push({ kind: "download", path });
+        continue;
+      }
+      // Both changed.
+      if (lHash === rHash) continue; // converged to identical content
+      if (lHash !== null) {
+        ops.push({ kind: "conflict", path, conflictCopyPath: opts.conflictCopyPath(path) });
+      } else {
+        // Local deleted but remote edited → restore remote (data-safe).
+        ops.push({ kind: "download", path });
+      }
       continue;
     }
 
-    // Only remote changed.
-    if (!localChanged && remoteChanged) {
-      ops.push(
-        rHash !== null
-          ? { kind: "download", path }
-          : { kind: "deleteLocal", path },
-      );
+    if (remote.tombstoned) {
+      // Explicit remote deletion.
+      if (lHash === null) continue; // already gone locally
+      if (lHash === bHash) {
+        ops.push({ kind: "deleteLocal", path }); // unchanged locally → honor it
+      } else {
+        ops.push({ kind: "upload", path }); // locally edited after the delete → keep local
+      }
       continue;
     }
 
-    // Both changed.
-    if (lHash === rHash) continue; // converged to the same content → no-op
-
-    if (lHash !== null && rHash !== null) {
-      // Genuine edit/edit conflict → keep both.
-      ops.push({ kind: "conflict", path, conflictCopyPath: opts.conflictCopyPath(path) });
-      continue;
-    }
-
-    // Delete-vs-edit: prefer keeping content (data-safe). The surviving edit
-    // resurrects the file; the user can re-delete if desired.
-    if (lHash === null && rHash !== null) {
-      ops.push({ kind: "download", path });
-      continue;
-    }
-    // lHash !== null && rHash === null
-    ops.push({ kind: "upload", path });
+    // Remote ABSENT (no entry at all). A missing entry is NOT a deletion — never
+    // delete local data on mere absence (NFR2; safe across manifest resets and
+    // layout changes). If the file exists locally, (re)upload it.
+    if (lHash !== null) ops.push({ kind: "upload", path });
+    // else: nothing anywhere → no-op.
   }
 
   return detectRenames ? applyRenameDetection(ops, input) : ops;

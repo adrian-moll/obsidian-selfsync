@@ -90,6 +90,14 @@ describe("reconcile — reconciliation rules", () => {
     expect(ops).toEqual([{ kind: "deleteLocal", path: "a.md" }]);
   });
 
+  it("re-uploads (never deletes) when the manifest is MISSING the entry (safety)", () => {
+    // File is in our base and present locally, but the remote manifest has no
+    // entry at all (e.g. manifest reset or layout change). Absence must NOT be
+    // read as a deletion — re-upload instead of deleting local data.
+    const ops = run([fm("a.md", "h1")], [se("a.md", "h1")], emptyManifest("remote"));
+    expect(ops).toEqual([{ kind: "upload", path: "a.md" }]);
+  });
+
   it("keeps both on a genuine edit/edit conflict", () => {
     const ops = run([fm("a.md", "h2")], [se("a.md", "h1")], manifest({ "a.md": me("h3") }));
     expect(ops).toEqual([{ kind: "conflict", path: "a.md", conflictCopyPath: "a.md.conflict" }]);
