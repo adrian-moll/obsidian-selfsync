@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { MemoryBackend } from "../src/backend/storage-backend.js";
 import { MirrorNaming, OpaqueNaming, type BlobNaming } from "../src/engine/naming.js";
+import { makeExcluder } from "../src/engine/exclude.js";
 import { dec, enc, makeDevice } from "./support/devices.js";
 
 async function createOne(naming: BlobNaming) {
@@ -42,6 +43,18 @@ describe("remote layout", () => {
     const keys = (await backend.list()).map((e) => e.key);
     expect(keys).toContain("Notes/done.md");
     expect(keys).not.toContain("Notes/todo.md");
+  });
+
+  it("never uploads excluded paths (e.g. the plugin's own data)", async () => {
+    const backend = new MemoryBackend();
+    const exclude = makeExcluder([".obsidian/plugins/selfsync/**"]);
+    const A = makeDevice(backend, "A", new MirrorNaming(), exclude);
+    await A.vault.writeBinary("Notes/todo.md", enc("hi"));
+    await A.vault.writeBinary(".obsidian/plugins/selfsync/data.json", enc("device-specific"));
+    await A.sync();
+    const keys = (await backend.list()).map((e) => e.key);
+    expect(keys).toContain("Notes/todo.md");
+    expect(keys).not.toContain(".obsidian/plugins/selfsync/data.json");
   });
 
   it("opaque mode still propagates across devices", async () => {

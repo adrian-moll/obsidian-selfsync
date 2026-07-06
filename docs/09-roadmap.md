@@ -38,7 +38,17 @@
     `onLayoutReady`, configurable interval, debounced vault-change, best-effort
     `quit`/`visibilitychange`/`blur`); **live status** via `SyncStore` → ribbon,
     status bar, and the Sync view (last sync, backend, layout, activity log,
-    conflicts, Sync-now button). 4 scheduler unit tests; 40 total green.
+    conflicts, Sync-now button). 4 scheduler unit tests.
+  - **Exclusions (FR8):** default excludes keep device-specific/volatile files out
+    of sync — most importantly SelfSync's **own** plugin folder
+    (`.obsidian/plugins/selfsync/**`, whose `data.json` differs per device and was
+    producing conflict copies), plus Obsidian workspace files and `.trash`. Extra
+    globs configurable in settings. Glob matcher + engine filtering, unit-tested.
+  - **Bounded conflict auto-retry:** a 412 (another device committed first)
+    retries up to 3× with a short delay, so transient startup contention converges
+    quietly instead of surfacing.
+  - **Copyable activity log** in the Sync view (Copy button + selectable textarea).
+  - 48 tests green.
   - **Crash-safety (NFR1)** is already provided by the engine: atomic conditional
     manifest commit + reconcile-on-startup + "absence is never a deletion". A
     *persistent* journal (faster resume) is deferred — an optimization, not

@@ -19,9 +19,11 @@
   debounced after file changes, and best-effort on app background/quit.
 - **FR7 — Manual sync + status.** A "Sync now" command plus a status indicator
   (idle / syncing / error / conflicts present).
-- **FR8 — Scope control.** Whole vault by default. An advanced glob-based exclude
-  list is available (e.g. `.trash`, workspace-local files) but is not required to
-  get started.
+- **FR8 — Scope control.** Whole vault by default, minus built-in default excludes
+  (SelfSync's own `.obsidian/plugins/selfsync/**`, Obsidian workspace files,
+  `.trash`) that would otherwise cause per-device conflicts. Extra glob excludes
+  are configurable in settings but not required to get started. *(Implemented in
+  M2.)*
 - **FR9 — Desktop-only Git backup.** Optionally auto-commit vault changes to a Git
   remote for versioning, independent of the sync backend.
 - **FR10 — Setup wizard.** A first-run flow: pick backend → enter credentials →

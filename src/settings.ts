@@ -146,5 +146,24 @@ export class SelfSyncSettingTab extends PluginSettingTab {
             }
           }),
       );
+
+    new Setting(containerEl)
+      .setName("Extra exclude patterns")
+      .setDesc(
+        "One glob per line, excluded from sync IN ADDITION to built-in defaults " +
+          "(SelfSync's own plugin folder, Obsidian workspace files, .trash). " +
+          "Use * within a folder and ** across folders, e.g. **/*.tmp",
+      )
+      .addTextArea((t) => {
+        t.setValue(this.plugin.settings.excludeGlobs.join("\n"));
+        t.inputEl.rows = 4;
+        t.onChange(async (v) => {
+          this.plugin.settings.excludeGlobs = v
+            .split("\n")
+            .map((s) => s.trim())
+            .filter((s) => s.length > 0);
+          await this.plugin.saveSettings();
+        });
+      });
   }
 }

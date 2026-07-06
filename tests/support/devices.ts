@@ -24,12 +24,13 @@ export function makeDevice(
   backend: StorageBackend,
   id: string,
   naming: BlobNaming = new MirrorNaming(),
+  exclude?: (path: string) => boolean,
 ): SimDevice {
   const vault = new MemoryVaultAdapter();
   const engine = new SyncEngine({ vault, backend, state: new MemoryStateStore(), deviceId: id, naming });
   let n = 0;
   return {
     vault,
-    sync: () => engine.sync({ timestampIso: `2026-01-01T00-00-${String(n++).padStart(2, "0")}Z` }),
+    sync: () => engine.sync({ timestampIso: `2026-01-01T00-00-${String(n++).padStart(2, "0")}Z`, exclude }),
   };
 }

@@ -37,11 +37,25 @@
   letter-spacing: 0.03em;
 }
 
-.selfsync-activity-log {
+textarea.selfsync-activity-log {
+  width: 100%;
+  min-height: 10rem;
+  resize: vertical;
+  font-family: var(--font-monospace);
   font-size: var(--font-ui-smaller);
   color: var(--text-muted);
-  max-height: 12rem;
-  overflow-y: auto;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  padding: 0.4rem;
+  white-space: pre;
+}
+
+.selfsync-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
 }
 
 .selfsync-empty {

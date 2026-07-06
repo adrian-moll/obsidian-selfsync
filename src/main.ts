@@ -17,6 +17,7 @@ import { JsonStateStore } from "./engine/state-db.js";
 import { SyncEngine } from "./engine/engine.js";
 import { SyncScheduler } from "./engine/scheduler.js";
 import { MirrorNaming, OpaqueNaming } from "./engine/naming.js";
+import { DEFAULT_EXCLUDES, makeExcluder } from "./engine/exclude.js";
 import { WebDavBackend } from "./backend/webdav-backend.js";
 import { obsidianHttp } from "./backend/obsidian-http.js";
 import type { StorageBackend } from "./backend/storage-backend.js";
@@ -44,6 +45,7 @@ export default class SelfSyncPlugin extends Plugin {
   private store = new SyncStore();
   private status?: StatusController;
   private scheduler!: SyncScheduler;
+  private conflictRetries = 0;
 
   async onload(): Promise<void> {
     await this.loadPersisted();
@@ -159,6 +161,7 @@ export default class SelfSyncPlugin extends Plugin {
 
     try {
       const naming = encrypted ? new OpaqueNaming() : new MirrorNaming();
+      const exclude = makeExcluder([...DEFAULT_EXCLUDES, ...this.settings.excludeGlobs]);
       const engine = new SyncEngine({
         vault: new ObsidianVaultAdapter(this.app),
         backend,
@@ -166,14 +169,23 @@ export default class SelfSyncPlugin extends Plugin {
         deviceId: this.settings.deviceId,
         naming,
       });
-      const res = await engine.sync({ timestampIso: new Date().toISOString(), useMtimeShortcut: true });
+      const res = await engine.sync({ timestampIso: new Date().toISOString(), useMtimeShortcut: true, exclude });
       const nowIso = new Date().toISOString();
 
       if (res.conflict) {
-        this.store.update({ status: "idle", detail: "Will retry (remote changed)", lastSyncIso: nowIso });
-        this.store.log("Remote changed mid-sync — will retry on next trigger");
+        // Another device committed the manifest first. Retry a bounded number of
+        // times (the winner's changes are already reflected on re-read).
+        this.store.update({ status: "idle", detail: "Remote changed — retrying", lastSyncIso: nowIso });
+        if (this.conflictRetries < 3) {
+          this.conflictRetries++;
+          this.store.log(`Remote changed mid-sync — retrying (${this.conflictRetries}/3)`);
+          this.scheduler.requestDebounced("retry", 1500);
+        } else {
+          this.store.log("Still contended after 3 retries — will sync on next change");
+        }
         return;
       }
+      this.conflictRetries = 0;
 
       const conflictPaths = res.ops
         .filter((o): o is Extract<Op, { kind: "conflict" }> => o.kind === "conflict")

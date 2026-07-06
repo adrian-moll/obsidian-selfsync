@@ -10,7 +10,7 @@
  * commit is a harmless orphan (GC later). Local State DB updates are applied only
  * AFTER a successful commit.
  */
-import type { FileMeta, Manifest, Op } from "../types.js";
+import type { FileMeta, Manifest, ManifestEntry, Op } from "../types.js";
 import type { VaultAdapter } from "../vault/vault-adapter.js";
 import { ConditionalWriteError, type StorageBackend } from "../backend/storage-backend.js";
 import type { StateStore } from "./state-db.js";
@@ -34,6 +34,8 @@ export interface SyncOptions {
   timestampIso: string;
   /** Skip re-hashing files whose size+mtime match the base (perf). */
   useMtimeShortcut?: boolean;
+  /** Paths matching this are never synced (uploaded/downloaded/deleted). */
+  exclude?: (path: string) => boolean;
 }
 
 export interface SyncResult {
@@ -49,10 +51,12 @@ export { ConditionalWriteError };
 export async function scanVault(
   vault: VaultAdapter,
   base?: Map<string, { contentHash: string; size: number; mtime: number }>,
+  exclude: (path: string) => boolean = () => false,
 ): Promise<Map<string, FileMeta>> {
   const paths = await vault.list();
   const out = new Map<string, FileMeta>();
   for (const path of paths) {
+    if (exclude(path)) continue;
     const st = await vault.stat(path);
     if (!st) continue;
     const prior = base?.get(path);
@@ -85,12 +89,21 @@ export class SyncEngine {
   }
 
   async sync(opts: SyncOptions): Promise<SyncResult> {
+    const exclude = opts.exclude ?? (() => false);
     const { manifest, etag } = await this.manifests.load();
-    const base = await this.deps.state.toMap();
-    const local = await scanVault(this.deps.vault, opts.useMtimeShortcut ? base : undefined);
+    const baseAll = await this.deps.state.toMap();
+    const local = await scanVault(this.deps.vault, opts.useMtimeShortcut ? baseAll : undefined, exclude);
+
+    // Hide excluded paths from reconciliation (from local, base, and remote) so
+    // they are never uploaded/downloaded/deleted. The full manifest is still
+    // committed below, so any pre-existing excluded remote entries are preserved.
+    const base = new Map([...baseAll].filter(([p]) => !exclude(p)));
+    const remoteEntries: Record<string, ManifestEntry> = {};
+    for (const [p, e] of Object.entries(manifest.entries)) if (!exclude(p)) remoteEntries[p] = e;
+    const remoteForReconcile: Manifest = { ...manifest, entries: remoteEntries };
 
     const ops = reconcile(
-      { local, base, remote: manifest },
+      { local, base, remote: remoteForReconcile },
       { conflictCopyPath: (p) => conflictCopyPath(p, this.deps.deviceId, opts.timestampIso) },
     );
 

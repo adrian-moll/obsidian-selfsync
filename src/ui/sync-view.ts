@@ -3,8 +3,8 @@
  * (docs/10-ui-integration.md). Renders live from the SyncStore — status, last
  * sync, active backend, a recent-activity log, and the conflicts list.
  */
-import { ItemView, type WorkspaceLeaf } from "obsidian";
-import type { SyncStore, SyncUiState } from "./sync-store.js";
+import { ItemView, Notice, type WorkspaceLeaf } from "obsidian";
+import type { SyncActivityEntry, SyncStore, SyncUiState } from "./sync-store.js";
 
 export const VIEW_TYPE_SELFSYNC = "selfsync-view";
 
@@ -72,14 +72,32 @@ export class SelfSyncView extends ItemView {
     }
 
     const activity = c.createDiv({ cls: "selfsync-section" });
-    activity.createEl("h4", { text: "Activity" });
+    const actHead = activity.createDiv({ cls: "selfsync-section-head" });
+    actHead.createEl("h4", { text: "Activity" });
+    if (s.activity.length > 0) {
+      const copyBtn = actHead.createEl("button", { text: "Copy" });
+      copyBtn.onclick = () => void this.copyLog(s.activity);
+    }
     if (s.activity.length === 0) {
       activity.createDiv({ cls: "selfsync-empty", text: "No sync has run yet." });
     } else {
-      const log = activity.createDiv({ cls: "selfsync-activity-log" });
-      for (const entry of s.activity) {
-        log.createDiv({ text: `${entry.time}  ${entry.message}` });
-      }
+      const log = activity.createEl("textarea", { cls: "selfsync-activity-log" });
+      log.readOnly = true;
+      log.value = this.formatLog(s.activity);
+    }
+  }
+
+  private formatLog(activity: SyncActivityEntry[]): string {
+    return activity.map((e) => `${e.time}  ${e.message}`).join("\n");
+  }
+
+  private async copyLog(activity: SyncActivityEntry[]): Promise<void> {
+    const text = this.formatLog(activity);
+    try {
+      await navigator.clipboard.writeText(text);
+      new Notice("SelfSync: activity log copied");
+    } catch {
+      new Notice("SelfSync: couldn't copy — select the text in the Activity box instead");
     }
   }
 }
