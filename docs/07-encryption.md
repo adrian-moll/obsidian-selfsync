@@ -1,9 +1,16 @@
 # 07 — Encryption
 
-End-to-end encryption is a **per-backend option**, default **ON** (D2). When
-enabled, the storage host — kDrive or a CouchDB instance — only ever sees
-ciphertext and opaque keys. All primitives come from **WebCrypto**, which is
+End-to-end encryption is a **per-backend option**, default **OFF** (D2, amended in
+round 3). When enabled, the storage host — kDrive or a CouchDB instance — only ever
+sees ciphertext and opaque keys. All primitives come from **WebCrypto**, which is
 available on both desktop and mobile (NFR4).
+
+**Layout coupling (D12):** encryption also determines the remote layout. OFF →
+files mirror the vault at their real paths (browsable). ON → opaque blob keys hide
+names. The `BlobNaming` split (mirror vs opaque) ships in M1b; the content
+encryption below (key derivation, AES-GCM, verifier) is implemented in M3. Until
+then, enabling the toggle only switches to the opaque layout — it does not yet
+encrypt content.
 
 ## Threat model
 
@@ -49,12 +56,14 @@ available on both desktop and mobile (NFR4).
 - This prevents a wrong passphrase from producing partial or garbage writes
   (NFR2).
 
-## When E2EE is off
+## When E2EE is off (the default)
 
-- Blobs and the manifest are stored as plaintext; confidentiality relies on
-  transport TLS and trust in the host. This mode exists for simple, fully-trusted
-  setups (e.g. CouchDB on a home LAN) and is a per-backend choice, not the
-  default.
+- Blobs and the manifest are stored as plaintext, and files mirror the vault at
+  their real paths so the server folder is **browsable** (D12). Confidentiality
+  relies on transport TLS and trust in the host.
+- This is the default: data sovereignty comes from controlling *where* data lives,
+  and the user gets a browsable copy of their vault on kDrive. E2EE is opt-in per
+  backend for less-trusted hosts.
 
 ## Open considerations
 

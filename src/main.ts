@@ -13,6 +13,7 @@ import { StatusController } from "./ui/status.js";
 import { ObsidianVaultAdapter } from "./vault/obsidian-vault-adapter.js";
 import { JsonStateStore } from "./engine/state-db.js";
 import { SyncEngine } from "./engine/engine.js";
+import { MirrorNaming, OpaqueNaming } from "./engine/naming.js";
 import { WebDavBackend } from "./backend/webdav-backend.js";
 import { obsidianHttp } from "./backend/obsidian-http.js";
 import type { StorageBackend } from "./backend/storage-backend.js";
@@ -91,11 +92,13 @@ export default class SelfSyncPlugin extends Plugin {
     this.syncing = true;
     this.status?.set("syncing", "SelfSync: syncing…");
     try {
+      const naming = this.settings.encryptionEnabled ? new OpaqueNaming() : new MirrorNaming();
       const engine = new SyncEngine({
         vault: new ObsidianVaultAdapter(this.app),
         backend,
         state: this.stateStore,
         deviceId: this.settings.deviceId,
+        naming,
       });
       const res = await engine.sync({ timestampIso: new Date().toISOString(), useMtimeShortcut: true });
 

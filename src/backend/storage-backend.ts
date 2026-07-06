@@ -44,6 +44,8 @@ export interface StorageBackend {
    */
   write(key: string, data: ArrayBuffer, prevEtag?: string): Promise<string>;
   remove(key: string, prevEtag?: string): Promise<void>;
+  /** Relocate a blob (server-side rename). Used for moves in both layouts. */
+  move(from: string, to: string): Promise<void>;
   capabilities(): BackendCapabilities;
 }
 
@@ -104,6 +106,13 @@ export class MemoryBackend implements StorageBackend {
       throw new ConditionalWriteError(key);
     }
     this.blobs.delete(key);
+  }
+
+  async move(from: string, to: string): Promise<void> {
+    const b = this.blobs.get(from);
+    if (!b) throw new Error(`Not found: ${from}`);
+    this.blobs.set(to, { data: b.data, etag: this.nextEtag() });
+    this.blobs.delete(from);
   }
 
   capabilities(): BackendCapabilities {

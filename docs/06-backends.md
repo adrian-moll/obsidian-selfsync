@@ -23,6 +23,9 @@ interface StorageBackend {
   /** Fetch a blob by key. */
   read(key: string): Promise<ArrayBuffer>;
 
+  /** Fetch a blob together with its etag, or null if absent (used for the manifest). */
+  readWithMeta(key: string): Promise<{ data: ArrayBuffer; etag?: string } | null>;
+
   /**
    * Store a blob. If `prevEtag` is given and the backend supports conditional
    * writes, the write must fail if the current etag differs (optimistic
@@ -32,6 +35,9 @@ interface StorageBackend {
 
   /** Delete a blob (idempotent). */
   remove(key: string, prevEtag?: string): Promise<void>;
+
+  /** Relocate a blob (server-side rename). Used for moves in both layouts. */
+  move(from: string, to: string): Promise<void>;
 
   /** Feature flags the engine adapts to. */
   capabilities(): { conditionalWrites: boolean };
@@ -43,11 +49,32 @@ The engine stores two kinds of objects through this interface: **content blobs**
 well-known key). Conditional writes matter mainly for the manifest, to detect
 concurrent writers (`05-sync-engine.md`).
 
+## Remote layout: mirror vs opaque (D12)
+
+The mapping from vault path to blob key is chosen by a **`BlobNaming`** strategy
+(`src/engine/naming.ts`), based on the encryption setting:
+
+- **Mirror (encryption OFF, default):** `blobKey(path) = path` — files are stored
+  at their real vault-relative paths under the sync root, so the server folder is
+  **browsable and mirrors the vault**. The manifest lives in a hidden
+  `.selfsync/manifest.json`.
+- **Opaque (encryption ON):** `blobKey(path) = b-<sha256(path)>` — names/paths are
+  hidden from the host. The manifest is at `manifest.json`.
+
+The manifest is authoritative in both modes (tombstones, versions, ETags). In
+mirror mode it is a metadata index beside browsable content; in opaque mode it also
+hides paths. Moves relocate the blob via `StorageBackend.move` whenever the key
+changes (mirror: real rename; opaque: cheap server-side rename).
+
 ## WebDAV backend (primary — Infomaniak kDrive)
 
 - Maps blob keys to files under a configured sync-root folder on kDrive.
 - Uses `PROPFIND` for `list`, `GET` for `read`, `PUT` for `write`, `DELETE` for
-  `remove`.
+  `remove`, `MKCOL` to create folders, and `MOVE` (with `Destination`) for `move`.
+- **Nested keys** (mirror layout): keys may contain `/`. The backend URL-encodes
+  each segment, creates ancestor folders on demand (`ensureParents` → cached
+  `MKCOL`s), and `list()` walks the tree recursively (Depth-1 per folder).
+  `MOVE` was confirmed working against real kDrive (backend contract + live e2e).
 - **Conditional writes: confirmed usable on kDrive (spike S2, 2026-07-06).** A
   live probe against a real kDrive endpoint verified:
   - Basic auth works with an **app-specific password** (the normal login password

@@ -2,6 +2,7 @@
 import { MemoryVaultAdapter } from "../../src/vault/memory-vault-adapter.js";
 import { MemoryStateStore } from "../../src/engine/state-db.js";
 import { SyncEngine } from "../../src/engine/engine.js";
+import { MirrorNaming, type BlobNaming } from "../../src/engine/naming.js";
 import type { StorageBackend } from "../../src/backend/storage-backend.js";
 
 export const enc = (s: string): ArrayBuffer => {
@@ -19,9 +20,13 @@ export interface SimDevice {
 }
 
 /** A simulated device: its own vault + State DB, sharing the given backend. */
-export function makeDevice(backend: StorageBackend, id: string): SimDevice {
+export function makeDevice(
+  backend: StorageBackend,
+  id: string,
+  naming: BlobNaming = new MirrorNaming(),
+): SimDevice {
   const vault = new MemoryVaultAdapter();
-  const engine = new SyncEngine({ vault, backend, state: new MemoryStateStore(), deviceId: id });
+  const engine = new SyncEngine({ vault, backend, state: new MemoryStateStore(), deviceId: id, naming });
   let n = 0;
   return {
     vault,

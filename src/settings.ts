@@ -21,7 +21,7 @@ export const DEFAULT_SETTINGS: SelfSyncSettings = {
   backendType: "webdav",
   webdav: { url: "", username: "", password: "", rootDir: "selfsync" },
   couchdb: { url: "", username: "", password: "", database: "obsidian" },
-  encryptionEnabled: true,
+  encryptionEnabled: false,
   syncOnStartup: true,
   syncIntervalMinutes: 5,
   syncOnFileChange: true,
@@ -120,8 +120,11 @@ export class SelfSyncSettingTab extends PluginSettingTab {
     }
 
     new Setting(containerEl)
-      .setName("End-to-end encryption")
-      .setDesc("Encrypt content and file names before upload. The host only ever sees ciphertext.")
+      .setName("Hide file names (encrypted layout)")
+      .setDesc(
+        "Off (default): files are stored at their real paths — the server folder is browsable and mirrors your vault. " +
+          "On: file names and folders are hidden behind opaque keys (not browsable). Full content encryption arrives in a later version.",
+      )
       .addToggle((t) =>
         t.setValue(this.plugin.settings.encryptionEnabled).onChange(async (v) => {
           this.plugin.settings.encryptionEnabled = v;

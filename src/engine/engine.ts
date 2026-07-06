@@ -17,14 +17,16 @@ import type { StateStore } from "./state-db.js";
 import { reconcile } from "./reconciler.js";
 import { cloneManifest, nextVersion, tombstone } from "./manifest.js";
 import { ManifestStore } from "./manifest-store.js";
+import type { BlobNaming } from "./naming.js";
 import { sha256 } from "../util/hash.js";
-import { utf8 } from "../backend/http.js";
 
 export interface SyncDeps {
   vault: VaultAdapter;
   backend: StorageBackend;
   state: StateStore;
   deviceId: string;
+  /** Maps vault paths to backend blob keys (mirror vs opaque layout). */
+  naming: BlobNaming;
 }
 
 export interface SyncOptions {
@@ -75,16 +77,11 @@ export function conflictCopyPath(path: string, device: string, timestampIso: str
   return path + suffix;
 }
 
-/** Opaque, stable blob key derived from a logical path. */
-async function blobKeyForPath(path: string): Promise<string> {
-  return "b-" + (await sha256(utf8.encode(path)));
-}
-
 export class SyncEngine {
   private readonly manifests: ManifestStore;
 
   constructor(private readonly deps: SyncDeps) {
-    this.manifests = new ManifestStore(deps.backend, deps.deviceId);
+    this.manifests = new ManifestStore(deps.backend, deps.deviceId, deps.naming.manifestKey);
   }
 
   async sync(opts: SyncOptions): Promise<SyncResult> {
@@ -133,7 +130,7 @@ export class SyncEngine {
         const st = await vault.stat(op.path);
         const size = st?.size ?? data.byteLength;
         const mtime = st?.mtime ?? 0;
-        const blobKey = working.entries[op.path]?.blobKey || (await blobKeyForPath(op.path));
+        const blobKey = await this.deps.naming.blobKey(op.path);
         await backend.write(blobKey, data);
         const version = nextVersion(working, op.path);
         working.entries[op.path] = { contentHash, version, blobKey, size, mtime, deleted: false };
@@ -194,7 +191,7 @@ export class SyncEngine {
         // Upload the conflict copy so the other device sees it too.
         const copyHash = await sha256(localData);
         const copyStat = await vault.stat(op.conflictCopyPath);
-        const copyBlobKey = await blobKeyForPath(op.conflictCopyPath);
+        const copyBlobKey = await this.deps.naming.blobKey(op.conflictCopyPath);
         await backend.write(copyBlobKey, localData);
         const copyVersion = nextVersion(working, op.conflictCopyPath);
         working.entries[op.conflictCopyPath] = {
@@ -221,8 +218,14 @@ export class SyncEngine {
       case "move": {
         const entry = working.entries[op.from];
         const st = await vault.stat(op.to);
+        const newBlobKey = await this.deps.naming.blobKey(op.to);
+        // Relocate the remote blob when its key changes (real rename in mirror
+        // mode; cheap server-side rename in opaque mode).
+        if (entry.blobKey !== newBlobKey) {
+          await backend.move(entry.blobKey, newBlobKey);
+        }
         const version = nextVersion(working, op.to);
-        working.entries[op.to] = { ...entry, version, deleted: false };
+        working.entries[op.to] = { ...entry, blobKey: newBlobKey, version, deleted: false };
         tombstone(working, op.from);
         stateMutations.push(async () => {
           await state.delete(op.from);
@@ -232,7 +235,7 @@ export class SyncEngine {
             size: st?.size ?? entry.size,
             mtime: st?.mtime ?? entry.mtime,
             version,
-            blobKey: entry.blobKey,
+            blobKey: newBlobKey,
           });
         });
         break;

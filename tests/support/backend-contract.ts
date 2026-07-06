@@ -55,5 +55,16 @@ export function runBackendContract(name: string, setup: () => Promise<ContractHa
       const keys = (await h.backend.list()).map((e) => e.key);
       expect(keys).not.toContain(k);
     });
+
+    it("move relocates a blob", async () => {
+      const from = h.key("mv-from.txt");
+      const to = h.key("mv-to.txt");
+      await h.backend.write(from, utf8.encode("data"));
+      await h.backend.move(from, to);
+      expect(utf8.decode(await h.backend.read(to))).toBe("data");
+      const keys = (await h.backend.list()).map((e) => e.key);
+      expect(keys).toContain(to);
+      expect(keys).not.toContain(from);
+    });
   });
 }

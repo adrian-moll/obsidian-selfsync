@@ -12,14 +12,29 @@ single Docker container.
 mobile networks. It is a proven target for Obsidian sync (Self-hosted LiveSync
 uses it). We use it as a **blob store** (see D4), not for its native replication.
 
-## D2 — Encryption: configurable per backend (E2EE optional, default ON)
+## D2 — Encryption: configurable per backend (E2EE optional, default OFF)
 
-**Choice:** End-to-end encryption is a per-backend option; the default is ON.
+**Choice:** End-to-end encryption is a per-backend option; the default is **OFF**
+(amended in round 3 — was ON).
 
-**Rationale:** Matches the data-sovereignty priority — with E2EE, kDrive/the host
-never sees plaintext. Making it optional keeps a simpler path available (e.g. a
-fully trusted self-hosted CouchDB on a home LAN) without forcing key management on
-users who don't want it. See `07-encryption.md`.
+**Rationale:** Data sovereignty is fundamentally about *where* data lives, which
+the user controls regardless of encryption. The user prefers the WebDAV folder to
+be human-browsable by default (see D12), and opts into E2EE when they want the
+host to see only ciphertext. Optional E2EE still serves less-trusted backends.
+See `07-encryption.md`.
+
+## D12 — Remote layout: mirror when unencrypted, opaque when encrypted
+
+**Choice:** The on-backend layout depends on the encryption setting:
+- **E2EE off → mirror:** files stored at their real vault paths (browsable on the
+  server); manifest in a hidden `.selfsync/` folder.
+- **E2EE on → opaque:** blob keys are opaque hashes; real paths live only in the
+  (encrypted) manifest.
+
+**Rationale:** Browsable-on-host and encrypted-at-rest are mutually exclusive — the
+host cannot hide names it must store. A `BlobNaming` strategy selects the layout
+from the encryption setting; the manifest remains the source of truth for
+tombstones/versions/ETags in both modes. See `06-backends.md`.
 
 ## D3 — Conflict resolution: keep both
 

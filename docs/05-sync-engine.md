@@ -63,6 +63,14 @@ manifest makes existence, deletions (tombstones), and renames **explicit and
 propagatable** (UC4/UC5). Content blobs are stored separately from the manifest so
 large files aren't rewritten when only metadata changes.
 
+**Blob keys & layout (`BlobNaming`, D12):** `blobKey` maps a logical path to a
+backend key. In **mirror** mode (encryption off) `blobKey = path`, so blobs sit at
+their real vault paths (browsable) and the manifest lives under `.selfsync/`. In
+**opaque** mode (encryption on) `blobKey = b-<hash>` and the manifest is at the
+root. The reconciliation rules below are identical in both modes; only the key
+mapping differs. Moves relocate the blob via `StorageBackend.move` when the key
+changes. See `06-backends.md`.
+
 ## Reconciliation rules
 
 For each logical path, compare **local (L)**, **base (B)**, **remote/manifest (R)**:

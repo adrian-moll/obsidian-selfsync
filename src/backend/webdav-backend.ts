@@ -71,20 +71,10 @@ function parseMultistatus(xml: string): ParsedResponse[] {
   });
 }
 
-/** Last path segment of an href, URL-decoded. */
-function baseName(href: string): string {
-  const clean = href.replace(/\/+$/, "");
-  const seg = clean.slice(clean.lastIndexOf("/") + 1);
-  try {
-    return decodeURIComponent(seg);
-  } catch {
-    return seg;
-  }
-}
-
 export class WebDavBackend implements StorageBackend {
   private readonly authHeader: string;
   private rootEnsured = false;
+  private readonly ensuredDirs = new Set<string>();
 
   constructor(private readonly opts: WebDavOptions) {
     this.authHeader = basicAuth(opts.username, opts.password);
@@ -94,12 +84,21 @@ export class WebDavBackend implements StorageBackend {
     return { Authorization: this.authHeader, ...extra };
   }
 
+  /** Encode each path segment but keep "/" separators (supports nested keys). */
+  private encodePath(path: string): string {
+    return path
+      .split("/")
+      .filter((s) => s.length > 0)
+      .map(encodeURIComponent)
+      .join("/");
+  }
+
   private rootUrl(): string {
     return this.opts.baseUrl.replace(/\/+$/, "") + "/" + encodeURIComponent(this.opts.rootDir) + "/";
   }
 
   private urlFor(key: string): string {
-    return this.rootUrl() + encodeURIComponent(key);
+    return this.rootUrl() + this.encodePath(key);
   }
 
   async testConnection(): Promise<void> {
@@ -124,21 +123,59 @@ export class WebDavBackend implements StorageBackend {
     this.rootEnsured = true;
   }
 
-  async list(): Promise<RemoteEntry[]> {
-    const res = await this.opts.http({
-      method: "PROPFIND",
-      url: this.rootUrl(),
-      headers: this.headers({ Depth: "1", "Content-Type": "application/xml" }),
-      body: PROPFIND_BODY,
-    });
-    if (res.status === 404) return [];
-    if (res.status < 200 || res.status >= 300) {
-      throw new Error(`WebDAV PROPFIND list failed: HTTP ${res.status}`);
+  /** MKCOL a single directory (relative to root), idempotently and cached. */
+  private async mkcol(relDir: string): Promise<void> {
+    if (this.ensuredDirs.has(relDir)) return;
+    const url = this.rootUrl() + this.encodePath(relDir) + "/";
+    const res = await this.opts.http({ method: "MKCOL", url, headers: this.headers() });
+    if (res.status !== 201 && res.status !== 405) {
+      throw new Error(`WebDAV MKCOL ${relDir} failed: HTTP ${res.status}`);
     }
-    const rootHref = this.rootUrl();
-    return parseMultistatus(utf8.decode(res.body))
-      .filter((r) => !r.isCollection && baseName(r.href) !== "" && baseName(rootHref) !== baseName(r.href))
-      .map((r) => ({ key: baseName(r.href), size: r.size, etag: r.etag ?? undefined }));
+    this.ensuredDirs.add(relDir);
+  }
+
+  /** Ensure the root and every ancestor directory of `key` exists. */
+  private async ensureParents(key: string): Promise<void> {
+    await this.ensureRoot();
+    const parts = key.split("/").filter((s) => s.length > 0);
+    parts.pop(); // drop the file name
+    let dir = "";
+    for (const part of parts) {
+      dir = dir ? `${dir}/${part}` : part;
+      await this.mkcol(dir);
+    }
+  }
+
+  async list(): Promise<RemoteEntry[]> {
+    const out: RemoteEntry[] = [];
+    const walk = async (relDir: string): Promise<void> => {
+      const url = this.rootUrl() + (relDir ? this.encodePath(relDir) + "/" : "");
+      const res = await this.opts.http({
+        method: "PROPFIND",
+        url,
+        headers: this.headers({ Depth: "1", "Content-Type": "application/xml" }),
+        body: PROPFIND_BODY,
+      });
+      if (res.status === 404) return;
+      if (res.status < 200 || res.status >= 300) {
+        throw new Error(`WebDAV PROPFIND list failed: HTTP ${res.status}`);
+      }
+      const reqPath = decodeURIComponent(new URL(url).pathname).replace(/\/+$/, "");
+      for (const r of parseMultistatus(utf8.decode(res.body))) {
+        if (!r.href) continue;
+        const hrefPath = decodeURIComponent(new URL(r.href, this.opts.baseUrl).pathname).replace(/\/+$/, "");
+        if (hrefPath === reqPath) continue; // the directory being listed
+        const name = hrefPath.slice(hrefPath.lastIndexOf("/") + 1);
+        const rel = relDir ? `${relDir}/${name}` : name;
+        if (r.isCollection) {
+          await walk(rel);
+        } else {
+          out.push({ key: rel, size: r.size, etag: r.etag ?? undefined });
+        }
+      }
+    };
+    await walk("");
+    return out;
   }
 
   async read(key: string): Promise<ArrayBuffer> {
@@ -161,7 +198,7 @@ export class WebDavBackend implements StorageBackend {
   }
 
   async write(key: string, data: ArrayBuffer, prevEtag?: string): Promise<string> {
-    await this.ensureRoot();
+    await this.ensureParents(key);
     const extra: Record<string, string> = { "Content-Type": "application/octet-stream" };
     if (prevEtag !== undefined) extra["If-Match"] = prevEtag;
     const res = await this.opts.http({ method: "PUT", url: this.urlFor(key), headers: this.headers(extra), body: data });
@@ -181,6 +218,18 @@ export class WebDavBackend implements StorageBackend {
     // 404 = already gone → idempotent success.
     if (res.status !== 404 && (res.status < 200 || res.status >= 300)) {
       throw new Error(`WebDAV DELETE ${key} failed: HTTP ${res.status}`);
+    }
+  }
+
+  async move(from: string, to: string): Promise<void> {
+    await this.ensureParents(to);
+    const res = await this.opts.http({
+      method: "MOVE",
+      url: this.urlFor(from),
+      headers: this.headers({ Destination: this.urlFor(to), Overwrite: "T" }),
+    });
+    if (res.status < 200 || res.status >= 300) {
+      throw new Error(`WebDAV MOVE ${from} -> ${to} failed: HTTP ${res.status}`);
     }
   }
 

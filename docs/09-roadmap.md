@@ -26,6 +26,12 @@
   *Remaining for CI parity:* the **L2 WebDAV container** test (needs Docker) so CI
   can run backend tests without kDrive credentials; currently CI relies on the
   in-memory contract + sim, with the live kDrive tests gated/skipped.
+- **M1b — Human-readable (mirror) layout. ✅ DONE.** `BlobNaming` strategy
+  (`src/engine/naming.ts`): mirror the vault at real paths when encryption is off
+  (browsable on kDrive), opaque keys when on. `WebDavBackend` gained nested-key
+  support (per-segment encoding, `ensureParents`/`MKCOL`, recursive `list`, `MOVE`);
+  `StorageBackend.move`; manifest under `.selfsync/` in mirror mode. Default
+  encryption OFF. `MOVE` confirmed against real kDrive. 35 tests green.
 - **M2 — Mobile hardening.** Startup reconcile, interval, debounced change,
   best-effort quit/visibility flush, resumable/chunked transfers. Wire real status
   into the ribbon/status-bar/Notices. Test on iPad and Android against kDrive. This

@@ -48,21 +48,29 @@ describe.skipIf(!hasKdrive)("live kDrive end-to-end sync", () => {
     await B.sync();
     expect(dec(await B.vault.readBinary("note.md"))).toBe("edited");
 
-    // concurrent edit → keep both
-    await A.vault.writeBinary("note.md", enc("A-version"));
-    await B.vault.writeBinary("note.md", enc("B-version"));
+    // rename A → B (validates WebDAV MOVE)
+    await A.vault.rename("note.md", "renamed.md");
+    const rmv = await A.sync();
+    expect(rmv.ops.some((o) => o.kind === "move")).toBe(true);
+    await B.sync();
+    expect(await B.vault.exists("note.md")).toBe(false);
+    expect(dec(await B.vault.readBinary("renamed.md"))).toBe("edited");
+
+    // concurrent edit → keep both (on the renamed file)
+    await A.vault.writeBinary("renamed.md", enc("A-version"));
+    await B.vault.writeBinary("renamed.md", enc("B-version"));
     await A.sync();
     const r = await B.sync();
     expect(r.ops.some((o) => o.kind === "conflict")).toBe(true);
-    expect(dec(await B.vault.readBinary("note.md"))).toBe("A-version");
-    const copies = (await B.vault.list()).filter((p) => p.startsWith("note (conflict"));
+    expect(dec(await B.vault.readBinary("renamed.md"))).toBe("A-version");
+    const copies = (await B.vault.list()).filter((p) => p.startsWith("renamed (conflict"));
     expect(copies).toHaveLength(1);
     expect(dec(await B.vault.readBinary(copies[0]))).toBe("B-version");
 
     // delete A → B
-    await A.vault.remove("note.md");
+    await A.vault.remove("renamed.md");
     await A.sync();
     await B.sync();
-    expect(await B.vault.exists("note.md")).toBe(false);
+    expect(await B.vault.exists("renamed.md")).toBe(false);
   }, 60_000);
 });
