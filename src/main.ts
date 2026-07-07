@@ -35,6 +35,7 @@ interface PersistedData {
 }
 
 const CHANGE_DEBOUNCE_MS = 3000;
+const GIT_PUSH_THROTTLE_MS = 60_000;
 
 /** DNS/connectivity failures — expected right after a mobile app resume. */
 function isTransientNetworkError(message: string): boolean {
@@ -84,9 +85,14 @@ export default class SelfSyncPlugin extends Plugin {
   private conflictRetries = 0;
   private netRetries = 0;
   private gitBusy = false;
+  private lastGitPushAt = 0;
+  private gitPushPending = false;
 
   async onload(): Promise<void> {
     await this.loadPersisted();
+    // Attempt a push on the first backup to drain any commits stranded from a
+    // previous session (e.g. a push that timed out).
+    this.gitPushPending = this.settings.git.enabled;
     this.stateStore = new JsonStateStore(this.syncState, async (all) => {
       this.syncState = all;
       await this.savePersisted();
@@ -131,6 +137,7 @@ export default class SelfSyncPlugin extends Plugin {
           ),
       );
       this.addCommand({ id: "git-commit-now", name: "Git backup: commit now", callback: () => void this.runGitBackup("manual") });
+      this.addCommand({ id: "git-push-now", name: "Git backup: push now", callback: () => void this.runGitBackup("manual", true) });
       this.addCommand({
         id: "show-file-history",
         name: "Show file history (Git)",
@@ -221,7 +228,7 @@ export default class SelfSyncPlugin extends Plugin {
     return backup;
   }
 
-  private async runGitBackup(reason: string): Promise<void> {
+  private async runGitBackup(reason: string, forcePush = false): Promise<void> {
     if (this.gitBusy) return;
     const backup = await this.getGitBackup();
     if (!backup) {
@@ -230,19 +237,39 @@ export default class SelfSyncPlugin extends Plugin {
     }
     this.gitBusy = true;
     try {
+      // Commit is cheap and local — do it every time.
       const res = await backup.commitAll(`SelfSync backup (${reason})`);
       if (res.committed) {
         this.store.log(`Git: committed ${res.oid?.slice(0, 7)}`);
-        if (this.settings.git.push && this.settings.git.remoteUrl) {
-          await backup.push();
-          this.store.log("Git: pushed");
-        }
-      } else if (reason === "manual") {
+        this.gitPushPending = true;
+      } else if (reason === "manual" && !forcePush) {
         this.store.log("Git: nothing to commit");
+      }
+
+      // Push is slow/flaky on big transfers — throttle it, and keep retrying a
+      // pending push on later syncs (not only right after a commit) until it lands.
+      const canPush = this.settings.git.push && !!this.settings.git.remoteUrl;
+      const due = forcePush || Date.now() - this.lastGitPushAt > GIT_PUSH_THROTTLE_MS;
+      if (canPush && (this.gitPushPending || forcePush) && due) {
+        this.lastGitPushAt = Date.now();
+        try {
+          await backup.push();
+          this.gitPushPending = false;
+          this.store.log("Git: pushed");
+        } catch (e) {
+          const m = e instanceof Error ? e.message : String(e);
+          this.gitPushPending = true; // keep trying next time
+          if (isTransientNetworkError(m) || /timed?\s*out/i.test(m)) {
+            this.store.log("Git: push deferred (timeout/offline) — will retry");
+          } else {
+            this.store.log("Git push error: " + m);
+            if (reason === "manual") new Notice("SelfSync Git push error: " + m);
+          }
+        }
       }
     } catch (e) {
       const m = e instanceof Error ? e.message : String(e);
-      this.store.log("Git error: " + m);
+      this.store.log("Git commit error: " + m);
       if (reason === "manual") new Notice("SelfSync Git error: " + m);
     } finally {
       this.gitBusy = false;
