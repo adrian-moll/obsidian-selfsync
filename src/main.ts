@@ -35,6 +35,13 @@ interface PersistedData {
 
 const CHANGE_DEBOUNCE_MS = 3000;
 
+/** DNS/connectivity failures — expected right after a mobile app resume. */
+function isTransientNetworkError(message: string): boolean {
+  return /UnknownHostException|Unable to resolve host|No address associated|ERR_NAME_NOT_RESOLVED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ECONNABORTED|Failed to fetch|NetworkError|net::ERR|getaddrinfo|ERR_INTERNET_DISCONNECTED|ERR_NETWORK|socket hang up/i.test(
+    message,
+  );
+}
+
 function describeOp(o: Op): string {
   switch (o.kind) {
     case "upload":
@@ -74,6 +81,7 @@ export default class SelfSyncPlugin extends Plugin {
   private status?: StatusController;
   private scheduler!: SyncScheduler;
   private conflictRetries = 0;
+  private netRetries = 0;
   private gitBusy = false;
 
   async onload(): Promise<void> {
@@ -328,6 +336,7 @@ export default class SelfSyncPlugin extends Plugin {
         return;
       }
       this.conflictRetries = 0;
+      this.netRetries = 0;
 
       // The panel lists ALL conflict copies present in the vault (any device),
       // so they persist across syncs until resolved (deleted).
@@ -351,9 +360,20 @@ export default class SelfSyncPlugin extends Plugin {
       if (this.settings.git.commitOnSync) void this.runGitBackup("after sync");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      this.store.update({ status: "error", detail: "Error", lastError: msg });
-      this.store.log("Error: " + msg);
-      if (trigger === "manual") new Notice("SelfSync error: " + msg);
+      if (isTransientNetworkError(msg)) {
+        // Offline / DNS not ready (common right after a mobile app resume).
+        // Recover quietly with a short backoff instead of alarming the user.
+        this.store.update({ status: "idle", detail: "Offline — will retry" });
+        if (this.netRetries === 0) this.store.log("Offline — will retry when the connection returns");
+        if (this.netRetries < 5) {
+          this.netRetries++;
+          this.scheduler.requestDebounced("net-retry", 8000);
+        }
+      } else {
+        this.store.update({ status: "error", detail: "Error", lastError: msg });
+        this.store.log("Error: " + msg);
+        if (trigger === "manual") new Notice("SelfSync error: " + msg);
+      }
     }
   }
 
