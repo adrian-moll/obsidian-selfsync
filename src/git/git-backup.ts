@@ -87,6 +87,48 @@ export class GitBackup {
     return { committed: true, oid };
   }
 
+  /**
+   * Commit all changes and (optionally) push, in chunks: stage+commit+push each
+   * batch of `chunkSize` files so each push is a small pack. This lets large
+   * backups get through a short server/proxy timeout instead of one huge push.
+   * On a push failure, stops pushing further chunks (commits still complete
+   * locally) and reports it so the caller can retry later.
+   */
+  async backup(
+    message: string,
+    opts: { chunkSize?: number; push: boolean },
+  ): Promise<{ commits: number; pushed: boolean; pushError?: string }> {
+    const chunkSize = Math.max(1, opts.chunkSize ?? 100);
+    const { dir } = this.cfg;
+    const matrix = await git.statusMatrix({ fs: this.fs, dir });
+    const changed = matrix.filter((row) => row[1] !== row[2]); // HEAD !== WORKDIR
+
+    let commits = 0;
+    let pushed = false;
+    let pushError: string | undefined;
+    const tryPush = async (): Promise<void> => {
+      if (!opts.push || pushError) return;
+      try {
+        await this.push();
+        pushed = true;
+      } catch (e) {
+        pushError = e instanceof Error ? e.message : String(e);
+      }
+    };
+
+    for (let i = 0; i < changed.length; i += chunkSize) {
+      for (const row of changed.slice(i, i + chunkSize)) {
+        const filepath = row[0];
+        if (row[2] === 0) await git.remove({ fs: this.fs, dir, filepath });
+        else await git.add({ fs: this.fs, dir, filepath });
+      }
+      await git.commit({ fs: this.fs, dir, message, author: this.author() });
+      commits++;
+      await tryPush();
+    }
+    return { commits, pushed, pushError };
+  }
+
   async push(): Promise<void> {
     if (!this.cfg.remoteUrl) throw new Error("No Git remote configured");
     await git.push({

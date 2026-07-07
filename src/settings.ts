@@ -13,6 +13,8 @@ export interface GitSettings {
   authorEmail: string;
   commitOnSync: boolean;
   push: boolean;
+  /** Files per commit/push when backing up (smaller = more, smaller pushes). */
+  pushChunkSize: number;
 }
 
 export interface SelfSyncSettings {
@@ -51,6 +53,7 @@ export const DEFAULT_SETTINGS: SelfSyncSettings = {
     authorEmail: "",
     commitOnSync: true,
     push: true,
+    pushChunkSize: 100,
   },
   deviceId: "",
 };
@@ -292,6 +295,18 @@ export class SelfSyncSettingTab extends PluginSettingTab {
         t.setValue(g.push).onChange(async (v) => {
           g.push = v;
           await this.plugin.saveSettings();
+        }),
+      );
+    new Setting(containerEl)
+      .setName("Push batch size")
+      .setDesc("Files per commit/push when backing up. Lower this if large pushes time out.")
+      .addText((t) =>
+        t.setValue(String(g.pushChunkSize)).onChange(async (v) => {
+          const n = Number(v);
+          if (Number.isFinite(n) && n >= 1) {
+            g.pushChunkSize = Math.floor(n);
+            await this.plugin.saveSettings();
+          }
         }),
       );
   }

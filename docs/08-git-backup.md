@@ -5,13 +5,21 @@ remote. It is a **backup/versioning** layer, completely independent of the sync
 transport (D7). It lets the user browse history and restore older note versions
 (UC9).
 
-> **Status: implemented (M5).** `src/git/git-backup.ts` (`GitBackup`) is
-> dynamically imported only on desktop, so mobile never loads `isomorphic-git`/
-> Node `fs`. It auto-commits after each sync (opt-in), exposes a "commit now"
-> command, and a **File-history view** (`src/ui/file-history-view.ts`) shows an
-> active note's commits with view/restore. `.gitignore` is seeded to exclude
-> SelfSync's own (`.obsidian/plugins/selfsync/`) data. Tested headlessly against a
-> real temp repo.
+> **Status: implemented (M5, hardened in 0.6.0).** `src/git/git-backup.ts`
+> (`GitBackup`) is dynamically imported only on desktop, so mobile never loads
+> `isomorphic-git`/Node `fs`. It auto-commits after each sync (opt-in), exposes
+> "commit now" / "push now" commands and buttons in the Sync panel, and a
+> **File-history view** (`src/ui/file-history-view.ts`) shows an active note's
+> commits with view/restore. `.gitignore` is seeded to exclude SelfSync's own
+> (`.obsidian/plugins/selfsync/`) data; `.git/**` is excluded from *sync*.
+>
+> **Chunked backup:** commits + pushes in batches of `git.pushChunkSize` files
+> (default 100) so each push is a small pack — large backups get through a short
+> server/proxy timeout instead of one huge push. Pushes are throttled and a
+> pending push (e.g. one that timed out) is retried on later syncs until it lands.
+> If pushes still time out, lower the batch size, or push over SSH / raise the
+> Gitea/reverse-proxy request timeout (git-over-HTTP via isomorphic-git is weak on
+> very large pushes). Tested headlessly against a real temp repo.
 
 ## Why desktop-only
 

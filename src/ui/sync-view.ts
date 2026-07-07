@@ -8,6 +8,13 @@ import type { SyncActivityEntry, SyncStore, SyncUiState } from "./sync-store.js"
 
 export const VIEW_TYPE_SELFSYNC = "selfsync-view";
 
+/** Git actions to surface as buttons when Git backup is enabled (desktop). */
+export interface GitPanelActions {
+  commitNow: () => void;
+  pushNow: () => void;
+  fileHistory: () => void;
+}
+
 export class SelfSyncView extends ItemView {
   private unsubscribe?: () => void;
 
@@ -16,6 +23,7 @@ export class SelfSyncView extends ItemView {
     private readonly store: SyncStore,
     private readonly onSyncNow: () => void,
     private readonly onResolveConflict: (conflictPath: string) => void,
+    private readonly gitActions: () => GitPanelActions | null,
   ) {
     super(leaf);
   }
@@ -62,8 +70,17 @@ export class SelfSyncView extends ItemView {
     if (s.lastError) list.createEl("li", { text: `Error: ${s.lastError}`, cls: "selfsync-error" });
 
     const sync = c.createDiv({ cls: "selfsync-section" });
-    const btn = sync.createEl("button", { text: "Sync now" });
-    btn.onclick = () => this.onSyncNow();
+    sync.createEl("button", { text: "Sync now" }).onclick = () => this.onSyncNow();
+
+    const git = this.gitActions();
+    if (git) {
+      const gitSection = c.createDiv({ cls: "selfsync-section" });
+      gitSection.createEl("h4", { text: "Git backup" });
+      const bar = gitSection.createDiv({ cls: "selfsync-section-head" });
+      bar.createEl("button", { text: "Commit now" }).onclick = () => git.commitNow();
+      bar.createEl("button", { text: "Push now" }).onclick = () => git.pushNow();
+      bar.createEl("button", { text: "File history" }).onclick = () => git.fileHistory();
+    }
 
     const conflicts = c.createDiv({ cls: "selfsync-section" });
     conflicts.createEl("h4", { text: `Conflicts (${s.conflicts.length})` });

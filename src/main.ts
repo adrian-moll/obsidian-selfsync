@@ -107,6 +107,14 @@ export default class SelfSyncPlugin extends Plugin {
           this.store,
           () => void this.scheduler.trigger("manual"),
           (conflictPath) => void this.openResolver(conflictPath),
+          () =>
+            Platform.isDesktopApp && this.settings.git.enabled
+              ? {
+                  commitNow: () => void this.runGitBackup("manual"),
+                  pushNow: () => void this.runGitBackup("manual", true),
+                  fileHistory: () => void this.activateFileHistory(),
+                }
+              : null,
         ),
     );
 
@@ -228,6 +236,15 @@ export default class SelfSyncPlugin extends Plugin {
     return backup;
   }
 
+  private logPushError(m: string, reason: string): void {
+    if (isTransientNetworkError(m) || /timed?\s*out/i.test(m)) {
+      this.store.log("Git: push deferred (timeout/offline) — will retry");
+    } else {
+      this.store.log("Git push error: " + m);
+      if (reason === "manual") new Notice("SelfSync Git push error: " + m);
+    }
+  }
+
   private async runGitBackup(reason: string, forcePush = false): Promise<void> {
     if (this.gitBusy) return;
     const backup = await this.getGitBackup();
@@ -237,35 +254,43 @@ export default class SelfSyncPlugin extends Plugin {
     }
     this.gitBusy = true;
     try {
-      // Commit is cheap and local — do it every time.
-      const res = await backup.commitAll(`SelfSync backup (${reason})`);
-      if (res.committed) {
-        this.store.log(`Git: committed ${res.oid?.slice(0, 7)}`);
+      const canPush = this.settings.git.push && !!this.settings.git.remoteUrl;
+      const doPush = canPush && (forcePush || Date.now() - this.lastGitPushAt > GIT_PUSH_THROTTLE_MS);
+      if (doPush) this.lastGitPushAt = Date.now();
+
+      // Commit + push in chunks so each push is a small pack (survives short
+      // server timeouts on large backups).
+      const res = await backup.backup(`SelfSync backup (${reason})`, {
+        chunkSize: this.settings.git.pushChunkSize,
+        push: doPush,
+      });
+      if (res.commits > 0) this.store.log(`Git: committed ${res.commits} batch(es)`);
+
+      if (res.pushed) {
+        this.gitPushPending = false;
+        this.store.log("Git: pushed");
+      } else if (res.pushError) {
         this.gitPushPending = true;
-      } else if (reason === "manual" && !forcePush) {
-        this.store.log("Git: nothing to commit");
+        this.logPushError(res.pushError, reason);
+      } else if (res.commits > 0) {
+        this.gitPushPending = canPush; // committed, push throttled/off
       }
 
-      // Push is slow/flaky on big transfers — throttle it, and keep retrying a
-      // pending push on later syncs (not only right after a commit) until it lands.
-      const canPush = this.settings.git.push && !!this.settings.git.remoteUrl;
-      const due = forcePush || Date.now() - this.lastGitPushAt > GIT_PUSH_THROTTLE_MS;
-      if (canPush && (this.gitPushPending || forcePush) && due) {
-        this.lastGitPushAt = Date.now();
+      // Drain an earlier backlog (a push that timed out on a prior cycle) — this
+      // is why later syncs now retry the push instead of stranding commits.
+      if (doPush && !res.pushed && !res.pushError && this.gitPushPending) {
         try {
           await backup.push();
           this.gitPushPending = false;
           this.store.log("Git: pushed");
         } catch (e) {
-          const m = e instanceof Error ? e.message : String(e);
-          this.gitPushPending = true; // keep trying next time
-          if (isTransientNetworkError(m) || /timed?\s*out/i.test(m)) {
-            this.store.log("Git: push deferred (timeout/offline) — will retry");
-          } else {
-            this.store.log("Git push error: " + m);
-            if (reason === "manual") new Notice("SelfSync Git push error: " + m);
-          }
+          this.gitPushPending = true;
+          this.logPushError(e instanceof Error ? e.message : String(e), reason);
         }
+      }
+
+      if (res.commits === 0 && !this.gitPushPending && reason === "manual") {
+        this.store.log("Git: up to date");
       }
     } catch (e) {
       const m = e instanceof Error ? e.message : String(e);

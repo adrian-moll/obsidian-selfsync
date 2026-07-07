@@ -50,6 +50,18 @@ describe("GitBackup", () => {
     await backup.commitAll("restore v1"); // checkpoint so the tree is clean again
   });
 
+  it("commits in chunks via backup()", async () => {
+    for (let i = 0; i < 10; i++) {
+      writeFileSync(join(dir, `chunk-${i}.md`), `content ${i} ${"x".repeat(i)}`);
+    }
+    const res = await backup.backup("chunked", { chunkSize: 3, push: false });
+    expect(res.commits).toBe(4); // ceil(10 / 3)
+    expect(res.pushed).toBe(false);
+
+    const res2 = await backup.backup("noop", { chunkSize: 3, push: false });
+    expect(res2.commits).toBe(0); // nothing left to commit
+  });
+
   it("honors .gitignore for the plugin's own data folder", async () => {
     mkdirSync(join(dir, ".obsidian", "plugins", "selfsync"), { recursive: true });
     writeFileSync(join(dir, ".obsidian", "plugins", "selfsync", "data.json"), "device-specific");
