@@ -9,6 +9,8 @@ export interface SelfSyncSettings {
   webdav: { url: string; username: string; password: string; rootDir: string };
   couchdb: { url: string; username: string; password: string; database: string };
   encryptionEnabled: boolean;
+  /** Sync the .obsidian config folder (default off — it churns across devices). */
+  syncObsidianConfig: boolean;
   syncOnStartup: boolean;
   syncIntervalMinutes: number;
   syncOnFileChange: boolean;
@@ -22,6 +24,7 @@ export const DEFAULT_SETTINGS: SelfSyncSettings = {
   webdav: { url: "", username: "", password: "", rootDir: "selfsync" },
   couchdb: { url: "", username: "", password: "", database: "obsidian" },
   encryptionEnabled: false,
+  syncObsidianConfig: false,
   syncOnStartup: true,
   syncIntervalMinutes: 5,
   syncOnFileChange: true,
@@ -128,6 +131,20 @@ export class SelfSyncSettingTab extends PluginSettingTab {
       .addToggle((t) =>
         t.setValue(this.plugin.settings.encryptionEnabled).onChange(async (v) => {
           this.plugin.settings.encryptionEnabled = v;
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName("Sync Obsidian config folder (.obsidian)")
+      .setDesc(
+        "Off (recommended): only notes and attachments sync. On: also sync .obsidian " +
+          "(themes, plugin settings) — but Obsidian rewrites some config files per device, " +
+          "which can cause repeated syncs and conflict copies.",
+      )
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.syncObsidianConfig).onChange(async (v) => {
+          this.plugin.settings.syncObsidianConfig = v;
           await this.plugin.saveSettings();
         }),
       );

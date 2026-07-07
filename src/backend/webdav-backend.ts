@@ -81,7 +81,9 @@ export class WebDavBackend implements StorageBackend {
   }
 
   private headers(extra: Record<string, string> = {}): Record<string, string> {
-    return { Authorization: this.authHeader, ...extra };
+    // no-cache prevents Electron's HTTP cache from issuing conditional GETs
+    // (If-None-Match/If-Modified-Since), which kDrive can answer with 412/304.
+    return { Authorization: this.authHeader, "Cache-Control": "no-cache", ...extra };
   }
 
   /** Encode each path segment but keep "/" separators (supports nested keys). */

@@ -7,12 +7,23 @@
  * + per-device sync state) differs on every device, so syncing it produces
  * endless conflict copies. Obsidian workspace files are per-device too.
  */
+/** Always excluded, regardless of the config-sync setting. */
 export const DEFAULT_EXCLUDES: string[] = [
   ".obsidian/plugins/selfsync/**", // our own plugin + state (device-specific)
+  ".trash/**",
+];
+
+/** Excludes the whole Obsidian config folder (opt-out via the config-sync setting). */
+export const OBSIDIAN_CONFIG_GLOB = ".obsidian/**";
+
+/**
+ * Volatile config files that must stay excluded even when the user opts to sync
+ * `.obsidian` — Obsidian rewrites these per device on load, causing sync churn.
+ */
+export const OBSIDIAN_VOLATILE: string[] = [
   ".obsidian/workspace.json",
   ".obsidian/workspace-mobile.json",
   ".obsidian/workspace",
-  ".trash/**",
 ];
 
 /** Convert a simple glob to a RegExp. `**` matches across `/`; `*` within a segment. */

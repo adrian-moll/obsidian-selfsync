@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_EXCLUDES, globToRegExp, makeExcluder } from "../src/engine/exclude.js";
+import {
+  DEFAULT_EXCLUDES,
+  OBSIDIAN_CONFIG_GLOB,
+  globToRegExp,
+  makeExcluder,
+} from "../src/engine/exclude.js";
 
 describe("glob exclusion", () => {
   it("matches exact paths", () => {
@@ -28,12 +33,17 @@ describe("glob exclusion", () => {
     expect(re.test("a/b.md")).toBe(false);
   });
 
-  it("defaults exclude the plugin's own folder and workspace files", () => {
+  it("always-on defaults exclude the plugin's own folder and .trash", () => {
     const ex = makeExcluder(DEFAULT_EXCLUDES);
     expect(ex(".obsidian/plugins/selfsync/data.json")).toBe(true);
-    expect(ex(".obsidian/workspace.json")).toBe(true);
     expect(ex(".trash/old.md")).toBe(true);
     expect(ex("Notes/todo.md")).toBe(false);
-    expect(ex(".obsidian/plugins/dataview/main.js")).toBe(false); // other plugins sync
+  });
+
+  it("the .obsidian config glob covers the whole config folder", () => {
+    const ex = makeExcluder([...DEFAULT_EXCLUDES, OBSIDIAN_CONFIG_GLOB]);
+    expect(ex(".obsidian/appearance.json")).toBe(true);
+    expect(ex(".obsidian/plugins/dataview/data.json")).toBe(true);
+    expect(ex("Notes/todo.md")).toBe(false);
   });
 });

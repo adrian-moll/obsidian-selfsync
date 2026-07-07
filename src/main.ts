@@ -17,7 +17,7 @@ import { JsonStateStore } from "./engine/state-db.js";
 import { SyncEngine } from "./engine/engine.js";
 import { SyncScheduler } from "./engine/scheduler.js";
 import { MirrorNaming, OpaqueNaming } from "./engine/naming.js";
-import { DEFAULT_EXCLUDES, makeExcluder } from "./engine/exclude.js";
+import { DEFAULT_EXCLUDES, OBSIDIAN_CONFIG_GLOB, OBSIDIAN_VOLATILE, makeExcluder } from "./engine/exclude.js";
 import { WebDavBackend } from "./backend/webdav-backend.js";
 import { obsidianHttp } from "./backend/obsidian-http.js";
 import type { StorageBackend } from "./backend/storage-backend.js";
@@ -30,12 +30,35 @@ interface PersistedData {
 
 const CHANGE_DEBOUNCE_MS = 3000;
 
+function describeOp(o: Op): string {
+  switch (o.kind) {
+    case "upload":
+      return `↑ ${o.path}`;
+    case "download":
+      return `↓ ${o.path}`;
+    case "deleteLocal":
+      return `del-local ${o.path}`;
+    case "deleteRemote":
+      return `del-remote ${o.path}`;
+    case "conflict":
+      return `conflict ${o.path}`;
+    case "move":
+      return `move ${o.from} → ${o.to}`;
+  }
+}
+
 function summarizeOps(ops: Op[]): string {
-  const counts: Record<string, number> = {};
-  for (const o of ops) counts[o.kind] = (counts[o.kind] ?? 0) + 1;
-  return Object.entries(counts)
-    .map(([k, n]) => `${n} ${k}`)
-    .join(", ");
+  const shown = ops.slice(0, 6).map(describeOp);
+  const extra = ops.length > shown.length ? ` (+${ops.length - shown.length} more)` : "";
+  return shown.join(", ") + extra;
+}
+
+function buildExcludePatterns(settings: SelfSyncSettings): string[] {
+  const patterns = [...DEFAULT_EXCLUDES];
+  if (settings.syncObsidianConfig) patterns.push(...OBSIDIAN_VOLATILE);
+  else patterns.push(OBSIDIAN_CONFIG_GLOB);
+  patterns.push(...settings.excludeGlobs);
+  return patterns;
 }
 
 export default class SelfSyncPlugin extends Plugin {
@@ -161,7 +184,7 @@ export default class SelfSyncPlugin extends Plugin {
 
     try {
       const naming = encrypted ? new OpaqueNaming() : new MirrorNaming();
-      const exclude = makeExcluder([...DEFAULT_EXCLUDES, ...this.settings.excludeGlobs]);
+      const exclude = makeExcluder(buildExcludePatterns(this.settings));
       const engine = new SyncEngine({
         vault: new ObsidianVaultAdapter(this.app),
         backend,
