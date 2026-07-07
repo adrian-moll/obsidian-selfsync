@@ -24,6 +24,7 @@ import { SyncScheduler } from "./engine/scheduler.js";
 import { MirrorNaming, OpaqueNaming } from "./engine/naming.js";
 import { DEFAULT_EXCLUDES, OBSIDIAN_CONFIG_GLOB, OBSIDIAN_VOLATILE, makeExcluder } from "./engine/exclude.js";
 import { WebDavBackend } from "./backend/webdav-backend.js";
+import { CouchDbBackend } from "./backend/couchdb-backend.js";
 import { obsidianHttp } from "./backend/obsidian-http.js";
 import type { StorageBackend } from "./backend/storage-backend.js";
 import type { Op, StateEntry } from "./types.js";
@@ -279,7 +280,7 @@ export default class SelfSyncPlugin extends Plugin {
   private backendLabel(): string {
     const s = this.settings;
     if (s.backendType === "webdav") return s.webdav.url ? "WebDAV" : "WebDAV (not configured)";
-    return "CouchDB";
+    return s.couchdb.url ? "CouchDB" : "CouchDB (not configured)";
   }
 
   private buildBackend(): StorageBackend | null {
@@ -294,7 +295,17 @@ export default class SelfSyncPlugin extends Plugin {
         http: obsidianHttp,
       });
     }
-    return null; // CouchDB backend is M4
+    if (s.backendType === "couchdb") {
+      if (!s.couchdb.url) return null;
+      return new CouchDbBackend({
+        baseUrl: s.couchdb.url,
+        username: s.couchdb.username,
+        password: s.couchdb.password,
+        database: s.couchdb.database || "obsidian",
+        http: obsidianHttp,
+      });
+    }
+    return null;
   }
 
   /** One sync cycle, invoked only via the scheduler (single-flight). */

@@ -137,6 +137,21 @@ export class SelfSyncSettingTab extends PluginSettingTab {
               await this.plugin.saveSettings();
             }),
         );
+      new Setting(containerEl).setName("CouchDB username").addText((t) =>
+        t.setValue(this.plugin.settings.couchdb.username).onChange(async (v) => {
+          this.plugin.settings.couchdb.username = v.trim();
+          await this.plugin.saveSettings();
+        }),
+      );
+      new Setting(containerEl)
+        .setName("CouchDB password")
+        .addText((t) => {
+          t.inputEl.type = "password";
+          t.setValue(this.plugin.settings.couchdb.password).onChange(async (v) => {
+            this.plugin.settings.couchdb.password = v;
+            await this.plugin.saveSettings();
+          });
+        });
       new Setting(containerEl).setName("CouchDB database").addText((t) =>
         t.setValue(this.plugin.settings.couchdb.database).onChange(async (v) => {
           this.plugin.settings.couchdb.database = v.trim();

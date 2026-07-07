@@ -101,11 +101,16 @@ changes (mirror: real rename; opaque: cheap server-side rename).
 
 ## CouchDB backend (self-hosted alternative)
 
+> **Status: implemented (M4).** `src/backend/couchdb-backend.ts`. `docker/docker-compose.yml`
+> spins up CouchDB (+ optional Gitea). Validated by the shared `StorageBackend`
+> contract against a real CouchDB 3 container.
+
 - Used as a **blob store**, not for native replication (see D4).
-- Each blob is a CouchDB document (with the content as an attachment, or chunked
-  across documents for large files). The document `_rev` serves as the `etag` for
-  conditional writes — CouchDB has **first-class conditional writes**
-  (`capabilities().conditionalWrites = true`).
+- Each blob is one CouchDB **document `{ data: <base64> }`** (M4 keeps it simple;
+  attachments/chunking for large files is a later optimization). The document
+  `_rev` serves as the `etag` for conditional writes — CouchDB has **first-class
+  conditional writes** (`capabilities().conditionalWrites = true`). Nested
+  (mirror-layout) keys are `encodeURIComponent`-encoded into the doc id.
 - `list` via an `_all_docs` query; `read`/`write`/`remove` via the document API.
 - One database per vault.
 - Runs on **all platforms** over HTTP(S).

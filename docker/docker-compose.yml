@@ -1,0 +1,42 @@
+# Self-hosted backends for SelfSync.
+#
+#   docker compose up -d
+#
+# CouchDB  — the alternative sync backend (set the SelfSync backend to "CouchDB",
+#            URL http://<host>:5984, and the credentials below).
+# Gitea    — an optional Git remote for the desktop Git backup.
+#
+# For internet exposure, put these behind a TLS-terminating reverse proxy
+# (Caddy/Traefik) — do NOT expose plain HTTP. Change the passwords below.
+
+services:
+  couchdb:
+    image: couchdb:3
+    container_name: selfsync-couchdb
+    restart: unless-stopped
+    environment:
+      COUCHDB_USER: selfsync
+      COUCHDB_PASSWORD: change-me-please
+    ports:
+      - "5984:5984"
+    volumes:
+      - couchdb-data:/opt/couchdb/data
+      - couchdb-config:/opt/couchdb/etc/local.d
+
+  gitea:
+    image: gitea/gitea:1
+    container_name: selfsync-gitea
+    restart: unless-stopped
+    environment:
+      USER_UID: "1000"
+      USER_GID: "1000"
+    ports:
+      - "3000:3000" # web UI + HTTPS git
+      - "2222:22" # ssh (optional)
+    volumes:
+      - gitea-data:/data
+
+volumes:
+  couchdb-data:
+  couchdb-config:
+  gitea-data:

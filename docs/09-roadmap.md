@@ -60,8 +60,14 @@
     real-device acceptance pass on iPad + Android against kDrive (manual).
 - **M3 — E2EE.** Configurable per-backend encryption, path encryption, key
   verifier (with L1/L3 coverage).
-- **M4 — CouchDB backend.** Implement the backend + ship `docker-compose.yml` and
-  setup docs; add **L2** CouchDB container tests.
+- **M4 — CouchDB backend. ✅ DONE.** `CouchDbBackend` (blob store: one JSON doc
+  `{data: base64}` per key, `_rev` as the optimistic-concurrency etag, one DB per
+  vault; nested keys via `encodeURIComponent`). Wired as a selectable backend in
+  settings (URL/user/password/database). Ships `docker/docker-compose.yml`
+  (CouchDB + optional Gitea). Validated with the shared `StorageBackend` contract
+  against a **real CouchDB 3 container** (write/read/list/conditional-write/
+  remove/move + etag round-trip) — gated on `SELFSYNC_COUCHDB_*` env, skipped in
+  CI. 73 tests (67 + 6 live-couch).
 - **M5 — Git backup. ✅ DONE.** Desktop-only (`Platform.isDesktopApp`) versioning
   via `isomorphic-git` on Node `fs`, dynamically imported so mobile never loads it
   (verified: `require("fs")` sits in a lazy `__esm` closure). `GitBackup`:
