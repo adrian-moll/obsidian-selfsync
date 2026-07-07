@@ -57,9 +57,16 @@ describe("two-device auto-merge", () => {
 
     expect(r.merged).toHaveLength(0);
     expect(r.conflictCopies).toHaveLength(1);
+    expect(r.existingConflicts).toHaveLength(1); // reported as present in the vault
     const copies = (await B.vault.list()).filter((p) => p.includes("(conflict"));
     expect(copies).toHaveLength(1);
     expect(dec(await B.vault.readBinary(NOTE))).toContain("VERSION A"); // remote canonical
     expect(dec(await B.vault.readBinary(copies[0]))).toContain("VERSION B"); // local kept
+
+    // The conflict copy persists in existingConflicts on a later clean sync
+    // (it's not re-created, but it's still listed until deleted).
+    const r2 = await B.sync();
+    expect(r2.conflictCopies).toHaveLength(0);
+    expect(r2.existingConflicts).toHaveLength(1);
   });
 });

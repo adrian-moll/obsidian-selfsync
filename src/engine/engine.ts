@@ -49,8 +49,15 @@ export interface SyncResult {
   conflict: boolean; // true if aborted due to a concurrent manifest write
   /** Paths whose concurrent edits were auto-merged (no conflict copy). */
   merged: string[];
-  /** Conflict-copy paths created for genuinely overlapping edits. */
+  /** Conflict-copy paths created for genuinely overlapping edits this cycle. */
   conflictCopies: string[];
+  /** ALL conflict-copy files currently present in the vault (any device). */
+  existingConflicts: string[];
+}
+
+/** Whether a vault path is a SelfSync conflict copy (e.g. `note (conflict …).md`). */
+export function isConflictCopy(path: string): boolean {
+  return /\(conflict [^)]*\)/.test(path);
 }
 
 interface Outcomes {
@@ -107,6 +114,7 @@ export class SyncEngine {
     const { manifest, etag } = await this.manifests.load();
     const baseAll = await this.deps.state.toMap();
     const local = await scanVault(this.deps.vault, opts.useMtimeShortcut ? baseAll : undefined, exclude);
+    const existingConflicts = [...local.keys()].filter(isConflictCopy);
 
     // Hide excluded paths from reconciliation (from local, base, and remote) so
     // they are never uploaded/downloaded/deleted. The full manifest is still
@@ -123,7 +131,7 @@ export class SyncEngine {
 
     const outcomes: Outcomes = { merged: [], conflictCopies: [] };
     if (ops.length === 0) {
-      return { ops, committed: false, conflict: false, merged: [], conflictCopies: [] };
+      return { ops, committed: false, conflict: false, merged: [], conflictCopies: [], existingConflicts };
     }
 
     const working = cloneManifest(manifest);
@@ -137,13 +145,21 @@ export class SyncEngine {
     } catch (err) {
       if (err instanceof ConditionalWriteError) {
         // Lost the race — leave State DB untouched; next cycle reconciles anew.
-        return { ops, committed: false, conflict: true, merged: [], conflictCopies: [] };
+        return { ops, committed: false, conflict: true, merged: [], conflictCopies: [], existingConflicts };
       }
       throw err;
     }
 
     for (const mutate of stateMutations) await mutate();
-    return { ops, committed: true, conflict: false, merged: outcomes.merged, conflictCopies: outcomes.conflictCopies };
+    return {
+      ops,
+      committed: true,
+      conflict: false,
+      merged: outcomes.merged,
+      conflictCopies: outcomes.conflictCopies,
+      // Include copies created this cycle (the scan predates their creation).
+      existingConflicts: [...new Set([...existingConflicts, ...outcomes.conflictCopies])],
+    };
   }
 
   /** Store the agreed content of a text file so future conflicts can 3-way merge. */

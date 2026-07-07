@@ -200,7 +200,12 @@ export default class SelfSyncPlugin extends Plugin {
       if (res.conflict) {
         // Another device committed the manifest first. Retry a bounded number of
         // times (the winner's changes are already reflected on re-read).
-        this.store.update({ status: "idle", detail: "Remote changed — retrying", lastSyncIso: nowIso });
+        this.store.update({
+          status: res.existingConflicts.length ? "conflicts" : "idle",
+          detail: "Remote changed — retrying",
+          lastSyncIso: nowIso,
+          conflicts: res.existingConflicts,
+        });
         if (this.conflictRetries < 3) {
           this.conflictRetries++;
           this.store.log(`Remote changed mid-sync — retrying (${this.conflictRetries}/3)`);
@@ -212,19 +217,22 @@ export default class SelfSyncPlugin extends Plugin {
       }
       this.conflictRetries = 0;
 
-      const conflictPaths = res.conflictCopies;
+      // The panel lists ALL conflict copies present in the vault (any device),
+      // so they persist across syncs until resolved (deleted).
+      const existing = res.existingConflicts;
       this.store.update({
-        status: conflictPaths.length ? "conflicts" : "idle",
-        detail: conflictPaths.length ? `${conflictPaths.length} conflict(s)` : "Idle",
+        status: existing.length ? "conflicts" : "idle",
+        detail: existing.length ? `${existing.length} conflict file(s)` : "Idle",
         lastSyncIso: nowIso,
-        conflicts: conflictPaths,
+        conflicts: existing,
       });
       this.store.log(res.ops.length ? `Synced: ${summarizeOps(res.ops)}` : "Up to date");
       if (res.merged.length) {
         this.store.log(`Auto-merged ${res.merged.length}: ${res.merged.slice(0, 4).join(", ")}`);
       }
-      if (conflictPaths.length) {
-        new Notice(`SelfSync: ${conflictPaths.length} conflict copy(ies) — overlapping edits, see the Sync panel.`);
+      // Notify only when THIS sync created a new conflict copy.
+      if (res.conflictCopies.length) {
+        new Notice(`SelfSync: ${res.conflictCopies.length} conflict copy(ies) — overlapping edits, see the Sync panel.`);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
