@@ -35,6 +35,7 @@ export class FileHistoryView extends ItemView {
   private state: ViewState | null = null;
   private loadedPath: string | null = null;
   private selected: string[] = []; // entry ids selected for A↔B diff (max 2)
+  private targetOverride: string | null = null; // pinned file (e.g. from right-click)
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -48,26 +49,41 @@ export class FileHistoryView extends ItemView {
     return VIEW_TYPE_FILE_HISTORY;
   }
   getDisplayText(): string {
-    return "File history";
+    return "SelfSync — File history";
   }
   getIcon(): string {
     return "history";
   }
 
+  /** Show a specific file's history (e.g. from the file context menu). */
+  showFile(path: string): void {
+    this.targetOverride = path;
+    void this.reload();
+  }
+
+  private currentTarget(): string | null {
+    return this.targetOverride ?? this.getActivePath();
+  }
+
   async onOpen(): Promise<void> {
-    // Follow the active note (re-load only when the file actually changes).
-    this.registerEvent(this.app.workspace.on("file-open", () => void this.maybeReload()));
+    // Follow the active note; opening a file clears any pinned target.
+    this.registerEvent(
+      this.app.workspace.on("file-open", () => {
+        this.targetOverride = null;
+        void this.maybeReload();
+      }),
+    );
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => void this.maybeReload()));
     await this.reload();
   }
   async onClose(): Promise<void> {}
 
   private async maybeReload(): Promise<void> {
-    if (this.getActivePath() !== this.loadedPath) await this.reload();
+    if (this.currentTarget() !== this.loadedPath) await this.reload();
   }
 
   private async reload(): Promise<void> {
-    const path = this.getActivePath();
+    const path = this.currentTarget();
     this.loadedPath = path;
     this.selected = [];
     if (!path) {
@@ -241,6 +257,7 @@ class VersionModal extends Modal {
 
   onOpen(): void {
     this.component.load();
+    this.modalEl.addClass("selfsync-modal");
     const { contentEl } = this;
     contentEl.addClass("selfsync-resolve");
     contentEl.createEl("h3", { text: this.opts.title });
@@ -296,6 +313,7 @@ class DiffModal extends Modal {
   }
 
   onOpen(): void {
+    this.modalEl.addClass("selfsync-modal");
     const { contentEl } = this;
     contentEl.addClass("selfsync-resolve");
     contentEl.createEl("h3", { text: "Compare versions" });

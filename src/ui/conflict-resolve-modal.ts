@@ -25,6 +25,7 @@ export class ConflictResolveModal extends Modal {
   }
 
   onOpen(): void {
+    this.modalEl.addClass("selfsync-modal");
     const { contentEl } = this;
     contentEl.addClass("selfsync-resolve");
     contentEl.createEl("h3", { text: `Resolve conflict: ${this.opts.canonicalPath}` });

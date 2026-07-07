@@ -58,6 +58,36 @@ textarea.selfsync-activity-log {
   gap: 0.5rem;
 }
 
+/* Large, resizable modals for diff / version preview / conflict resolver */
+.modal.selfsync-modal {
+  width: min(90vw, 1200px);
+  height: min(85vh, 900px);
+  resize: both;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal.selfsync-modal .modal-content {
+  flex: 1 1 auto;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.modal.selfsync-modal .selfsync-diff,
+.modal.selfsync-modal .selfsync-rendered {
+  max-height: none;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.modal.selfsync-modal textarea.selfsync-activity-log {
+  flex: 1 1 auto;
+  min-height: 30vh;
+}
+
 /* Conflict resolver side-by-side diff */
 .selfsync-resolve .selfsync-diff {
   border: 1px solid var(--background-modifier-border);

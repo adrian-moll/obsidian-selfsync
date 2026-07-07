@@ -7,7 +7,7 @@
  * single-flight SyncScheduler so they never overlap. Live status flows through a
  * SyncStore into the ribbon/status bar and the Sync view.
  */
-import { FileSystemAdapter, Notice, Platform, Plugin } from "obsidian";
+import { FileSystemAdapter, Notice, Platform, Plugin, TFile } from "obsidian";
 import { DEFAULT_SETTINGS, type SelfSyncSettings, SelfSyncSettingTab } from "./settings.js";
 import { SelfSyncView, VIEW_TYPE_SELFSYNC } from "./ui/sync-view.js";
 import { FileHistoryView, VIEW_TYPE_FILE_HISTORY } from "./ui/file-history-view.js";
@@ -130,6 +130,18 @@ export default class SelfSyncPlugin extends Plugin {
         name: "Show file history (Git)",
         callback: () => void this.activateFileHistory(),
       });
+      // Right-click a file → SelfSync: File history.
+      this.registerEvent(
+        this.app.workspace.on("file-menu", (menu, file) => {
+          if (!(file instanceof TFile)) return;
+          menu.addItem((item) =>
+            item
+              .setTitle("SelfSync: File history")
+              .setIcon("history")
+              .onClick(() => void this.activateFileHistory(file.path)),
+          );
+        }),
+      );
     }
 
     // Set up triggers once the workspace is ready (avoids the initial file-load
@@ -231,17 +243,17 @@ export default class SelfSyncPlugin extends Plugin {
     }
   }
 
-  private async activateFileHistory(): Promise<void> {
+  private async activateFileHistory(path?: string): Promise<void> {
     const { workspace } = this.app;
-    const existing = workspace.getLeavesOfType(VIEW_TYPE_FILE_HISTORY)[0];
-    if (existing) {
-      workspace.revealLeaf(existing);
-      return;
+    let leaf = workspace.getLeavesOfType(VIEW_TYPE_FILE_HISTORY)[0];
+    if (!leaf) {
+      const right = workspace.getRightLeaf(false);
+      if (!right) return;
+      await right.setViewState({ type: VIEW_TYPE_FILE_HISTORY, active: true });
+      leaf = right;
     }
-    const leaf = workspace.getRightLeaf(false);
-    if (!leaf) return;
-    await leaf.setViewState({ type: VIEW_TYPE_FILE_HISTORY, active: true });
     workspace.revealLeaf(leaf);
+    if (path && leaf.view instanceof FileHistoryView) leaf.view.showFile(path);
   }
 
   /** Open the side-by-side resolver for a conflict copy (D9/FR12). */
