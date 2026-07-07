@@ -28,7 +28,11 @@ bonus.
 
 ### Sync view (`ItemView` in a sidebar; desktop + mobile) — the dashboard
 Sections:
-- **Status header** — current state, last-sync time, active backend, E2EE on/off.
+- **Status header** — current state, last-sync time (relative + absolute), active
+  backend, layout (mirror/opaque), **files synced** count, **skipped (too large)**
+  count, and a **Git changes pending push** indicator when a push is outstanding.
+- **Actions** — **Sync now** and a **Test connection** button (runs the same
+  WebDAV `testConnection()` used in settings and toasts the result).
 - **Activity** — in-progress and queued operations; a scrolling recent-activity
   log (uploaded/downloaded/deleted/renamed, with timestamps).
 - **Errors** — last error with details and a **Retry** button.
@@ -73,12 +77,19 @@ The Git-backed history browser is a separate `ItemView`, gated by
 
 ## Settings tab
 
-- **Backend** — WebDAV endpoint / credentials / sync folder.
+- **Backend** — WebDAV endpoint / credentials / sync folder + a **Test WebDAV
+  connection** button.
 - **Encryption** — per-backend E2EE toggle; passphrase entry; verifier status.
 - **Triggers** — startup on/off, interval length, debounce delay,
   quit/background flush on/off.
+- **Max file size (MB)** — skip files above this to avoid the large-file OOM crash
+  (notably Android); 0 disables. See `git-backup.md`/engine `maxFileBytes`.
+- **Debug logging** — verbose leveled logging to a rotating `selfsync.log` in the
+  plugin folder (`util/logger.ts`; mobile-safe via `DataAdapter.append`).
 - **Scope** — advanced exclude globs (defaults to whole vault).
-- **Git backup** (desktop only) — enable, remote URL/credentials, commit cadence.
+- **Git backup** (desktop only) — enable, remote URL/credentials, **Test Git
+  connection**, commit cadence, backup excludes, and **compact history to
+  snapshot**.
 - **Notifications** — which events raise Notices.
 
 ## Mobile summary

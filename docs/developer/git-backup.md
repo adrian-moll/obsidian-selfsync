@@ -53,10 +53,31 @@ gated by `Platform.isDesktopApp` and is hidden/disabled in the mobile UI.
 
 - Enable/disable Git backup (only shown on desktop).
 - Remote URL + credentials (token/password over HTTPS).
+- **Test connection** — `GitBackup.testRemote()` uses `isomorphic-git`
+  `getRemoteInfo2` (`forPush: true`) to verify the remote is reachable with the
+  configured credentials, without committing or pushing.
 - Commit cadence (after sync / on interval / manual).
 - Optional author name/email for commits.
-- Optional `.gitignore` seeding (e.g. exclude `.obsidian/workspace*`,
-  plugin caches).
+- **Git backup excludes** (`git.excludeGlobs`) — extra patterns written into a
+  *managed block* of `.gitignore` (delimited by marker comments); content outside
+  the block is preserved and the block is updated in place on re-init. Use it to
+  keep large/churning attachments out of the backup (see history size below).
+
+## History size & compaction
+
+`.git` lives at the vault root and history is **unbounded**. Text history is cheap
+(delta-compressed), but **every version of a binary attachment is stored in full**,
+so binaries are the real source of bloat. Two levers manage this:
+
+- **Preventive:** exclude large/binary attachments via `git.excludeGlobs` so notes
+  keep full history while binaries stop inflating `.git`.
+- **Reclaim:** `GitBackup.compactHistory()` — deletes `.git`, re-inits, makes one
+  fresh `SelfSync snapshot` commit of the current tree, and force-pushes to replace
+  remote history. `isomorphic-git` has **no gc/repack**, so re-initializing the repo
+  is the only way to actually reclaim disk from old history. This is **destructive
+  and irreversible** (past versions can no longer be restored), so it is gated
+  behind a confirmation modal and exposed as the "Git backup: compact history to
+  snapshot" command / settings button. Desktop-only.
 
 ## Non-goals
 

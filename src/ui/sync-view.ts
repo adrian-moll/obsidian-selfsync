@@ -5,6 +5,7 @@
  */
 import { ItemView, Notice, type WorkspaceLeaf } from "obsidian";
 import type { SyncActivityEntry, SyncStore, SyncUiState } from "./sync-store.js";
+import { relativeTime } from "../util/time.js";
 
 export const VIEW_TYPE_SELFSYNC = "selfsync-view";
 
@@ -24,6 +25,7 @@ export class SelfSyncView extends ItemView {
     private readonly onSyncNow: () => void,
     private readonly onResolveConflict: (conflictPath: string) => void,
     private readonly gitActions: () => GitPanelActions | null,
+    private readonly onTestConnection: () => Promise<{ ok: boolean; message: string }>,
   ) {
     super(leaf);
   }
@@ -62,15 +64,24 @@ export class SelfSyncView extends ItemView {
     const meta = c.createDiv({ cls: "selfsync-section" });
     meta.createEl("h4", { text: "Status" });
     const list = meta.createEl("ul");
-    list.createEl("li", {
-      text: `Last sync: ${s.lastSyncIso ? new Date(s.lastSyncIso).toLocaleString() : "never"}`,
-    });
+    list.createEl("li", { text: `Last sync: ${this.formatLastSync(s.lastSyncIso)}` });
     list.createEl("li", { text: `Backend: ${s.backendLabel}` });
     list.createEl("li", { text: `Layout: ${s.encrypted ? "encrypted (opaque)" : "browsable (mirror)"}` });
+    list.createEl("li", { text: `Files synced: ${s.trackedFiles}` });
+    if (s.skippedLarge > 0) {
+      list.createEl("li", {
+        text: `Skipped (too large): ${s.skippedLarge}`,
+        cls: "selfsync-error",
+      });
+    }
+    if (s.gitPushPending) list.createEl("li", { text: "Git: changes pending push" });
     if (s.lastError) list.createEl("li", { text: `Error: ${s.lastError}`, cls: "selfsync-error" });
 
     const sync = c.createDiv({ cls: "selfsync-section" });
-    sync.createEl("button", { text: "Sync now" }).onclick = () => this.onSyncNow();
+    const syncBar = sync.createDiv({ cls: "selfsync-section-head" });
+    syncBar.createEl("button", { text: "Sync now" }).onclick = () => this.onSyncNow();
+    const testBtn = syncBar.createEl("button", { text: "Test connection" });
+    testBtn.onclick = () => void this.runTest(testBtn);
 
     const git = this.gitActions();
     if (git) {
@@ -109,6 +120,25 @@ export class SelfSyncView extends ItemView {
       const log = activity.createEl("textarea", { cls: "selfsync-activity-log" });
       log.readOnly = true;
       log.value = this.formatLog(s.activity);
+    }
+  }
+
+  private formatLastSync(iso: string | null): string {
+    if (!iso) return "never";
+    const ms = Date.parse(iso);
+    if (Number.isNaN(ms)) return "never";
+    return `${relativeTime(Math.floor(ms / 1000))} (${new Date(ms).toLocaleString()})`;
+  }
+
+  private async runTest(btn: HTMLButtonElement): Promise<void> {
+    btn.disabled = true;
+    btn.textContent = "Testing…";
+    try {
+      const res = await this.onTestConnection();
+      new Notice(`SelfSync: ${res.message}`);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Test connection";
     }
   }
 

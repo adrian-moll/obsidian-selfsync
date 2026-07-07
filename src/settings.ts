@@ -1,5 +1,5 @@
 /** Plugin settings model + settings tab. M0 exposes a minimal skeleton. */
-import { type App, Platform, PluginSettingTab, Setting } from "obsidian";
+import { type App, Notice, Platform, PluginSettingTab, Setting } from "obsidian";
 import type SelfSyncPlugin from "./main.js";
 import { type SecretStorageMode } from "./util/secret-store.js";
 
@@ -14,6 +14,8 @@ export interface GitSettings {
   push: boolean;
   /** Files per commit/push when backing up (smaller = more, smaller pushes). */
   pushChunkSize: number;
+  /** Extra glob patterns kept out of the Git backup (managed .gitignore block). */
+  excludeGlobs: string[];
 }
 
 export interface SelfSyncSettings {
@@ -27,6 +29,15 @@ export interface SelfSyncSettings {
   syncIntervalMinutes: number;
   syncOnFileChange: boolean;
   excludeGlobs: string[];
+  /**
+   * Skip files larger than this (MB) during sync. Reading a whole large file into
+   * memory (and, on mobile, base64-encoding it for the HTTP body) can OOM/crash
+   * Obsidian — notably on Android. 0 disables the guard. See docs/roadmap (chunked
+   * transfers are the eventual fix).
+   */
+  maxFileMB: number;
+  /** Verbose logging + a rotating log file in the plugin folder (troubleshooting). */
+  debugLogging: boolean;
   /** Desktop-only Git backup (D7/FR9). */
   git: GitSettings;
   /** Stable per-device id, generated on first load. */
@@ -42,6 +53,8 @@ export const DEFAULT_SETTINGS: SelfSyncSettings = {
   syncIntervalMinutes: 5,
   syncOnFileChange: true,
   excludeGlobs: [],
+  maxFileMB: 50,
+  debugLogging: false,
   git: {
     enabled: false,
     remoteUrl: "",
@@ -52,6 +65,7 @@ export const DEFAULT_SETTINGS: SelfSyncSettings = {
     commitOnSync: true,
     push: true,
     pushChunkSize: 100,
+    excludeGlobs: [],
   },
   deviceId: "",
 };
@@ -71,7 +85,7 @@ export class SelfSyncSettingTab extends PluginSettingTab {
     containerEl.createEl("h3", { text: "SelfSync" });
     containerEl.createEl("p", {
       cls: "setting-item-description",
-      text: "Early development (M0). Configuration below is a skeleton; syncing is not functional yet.",
+      text: "Self-hosted, bring-your-own-backend sync and backup. Configure your WebDAV backend below.",
     });
 
     new Setting(containerEl).setName("WebDAV").setHeading();
@@ -113,6 +127,18 @@ export class SelfSyncSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }),
       );
+
+    new Setting(containerEl)
+      .setName("Test WebDAV connection")
+      .setDesc("Check that the URL and credentials above can reach the server.")
+      .addButton((b) => {
+        b.setButtonText("Test connection").onClick(async () => {
+          b.setButtonText("Testing…").setDisabled(true);
+          const res = await this.plugin.testWebDavConnection();
+          new Notice(`SelfSync: ${res.message}`);
+          b.setButtonText("Test connection").setDisabled(false);
+        });
+      });
 
     const securityBase = "How the WebDAV password and Git token are stored on this device (in data.json). ";
     const securitySetting = new Setting(containerEl)
@@ -187,6 +213,35 @@ export class SelfSyncSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName("Max file size (MB)")
+      .setDesc(
+        "Skip files larger than this during sync. Very large files are read whole into " +
+          "memory and can crash Obsidian (especially on Android). 0 disables the limit.",
+      )
+      .addText((t) =>
+        t.setValue(String(this.plugin.settings.maxFileMB)).onChange(async (v) => {
+          const n = Number(v);
+          if (Number.isFinite(n) && n >= 0) {
+            this.plugin.settings.maxFileMB = Math.floor(n);
+            await this.plugin.saveSettings();
+          }
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName("Debug logging")
+      .setDesc(
+        "Verbose logging written to a rotating file (selfsync.log) in this plugin's folder. " +
+          "Turn on when troubleshooting, then share or inspect the log.",
+      )
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.debugLogging).onChange(async (v) => {
+          this.plugin.settings.debugLogging = v;
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    new Setting(containerEl)
       .setName("Extra exclude patterns")
       .setDesc(
         "One glob per line, excluded from sync IN ADDITION to built-in defaults " +
@@ -250,6 +305,17 @@ export class SelfSyncSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         });
       });
+    new Setting(containerEl)
+      .setName("Test Git connection")
+      .setDesc("Check the remote is reachable with these credentials (no push).")
+      .addButton((b) =>
+        b.setButtonText("Test connection").onClick(async () => {
+          b.setButtonText("Testing…").setDisabled(true);
+          const res = await this.plugin.testGitConnection();
+          new Notice(`SelfSync: ${res.message}`);
+          b.setButtonText("Test connection").setDisabled(false);
+        }),
+      );
     new Setting(containerEl).setName("Commit author name").addText((t) =>
       t.setValue(g.authorName).onChange(async (v) => {
         g.authorName = v;
@@ -289,6 +355,39 @@ export class SelfSyncSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           }
         }),
+      );
+
+    new Setting(containerEl)
+      .setName("Git backup excludes")
+      .setDesc(
+        "One glob per line, kept out of the Git backup (written to a managed block in " +
+          ".gitignore). Use this for large/churning attachments so history stays small — " +
+          "every version of a binary is stored in full. e.g. **/*.mp4 or Attachments/**",
+      )
+      .addTextArea((t) => {
+        t.setValue(g.excludeGlobs.join("\n"));
+        t.inputEl.rows = 3;
+        t.onChange(async (v) => {
+          g.excludeGlobs = v
+            .split("\n")
+            .map((s) => s.trim())
+            .filter((s) => s.length > 0);
+          await this.plugin.saveSettings();
+        });
+      });
+
+    new Setting(containerEl)
+      .setName("Compact history to snapshot")
+      .setDesc(
+        "Reclaim space by discarding ALL Git history and keeping only the current state " +
+          "as a single commit, then force-pushing to the remote. Destructive and permanent — " +
+          "past versions can no longer be restored.",
+      )
+      .addButton((b) =>
+        b
+          .setButtonText("Compact history…")
+          .setWarning()
+          .onClick(() => this.plugin.confirmCompactHistory()),
       );
   }
 }

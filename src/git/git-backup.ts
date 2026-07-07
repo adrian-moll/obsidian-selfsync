@@ -23,6 +23,19 @@ export interface GitConfig {
   token?: string;
   authorName?: string;
   authorEmail?: string;
+  /** Extra patterns to keep out of the backup (managed .gitignore block). */
+  excludeGlobs?: string[];
+}
+
+// Markers delimiting the block of .gitignore SelfSync owns; content outside the
+// block is left untouched so users can add their own ignores.
+const GITIGNORE_BEGIN = "# --- SelfSync managed (do not edit this block) ---";
+const GITIGNORE_END = "# --- end SelfSync managed ---";
+// Always kept out of the backup: SelfSync's own device-specific data + OS trash.
+const GITIGNORE_BASE = [".obsidian/plugins/selfsync/", ".trash/"];
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export interface CommitInfo {
@@ -57,11 +70,7 @@ export class GitBackup {
     if (!(await this.isRepo())) {
       await git.init({ fs: this.fs, dir: this.cfg.dir, defaultBranch: DEFAULT_BRANCH });
     }
-    const gitignore = path.join(this.cfg.dir, ".gitignore");
-    if (!this.fs.existsSync(gitignore)) {
-      // Keep SelfSync's own (device-specific) data and OS trash out of the backup.
-      this.fs.writeFileSync(gitignore, [".obsidian/plugins/selfsync/", ".trash/", ""].join("\n"));
-    }
+    this.writeGitignore();
     if (this.cfg.remoteUrl) {
       const remotes = await git.listRemotes({ fs: this.fs, dir: this.cfg.dir });
       const origin = remotes.find((r) => r.remote === "origin");
@@ -71,6 +80,57 @@ export class GitBackup {
         await git.deleteRemote({ fs: this.fs, dir: this.cfg.dir, remote: "origin" });
         await git.addRemote({ fs: this.fs, dir: this.cfg.dir, remote: "origin", url: this.cfg.remoteUrl });
       }
+    }
+  }
+
+  /**
+   * Ensure .gitignore contains SelfSync's managed block (base excludes + the user's
+   * Git excludeGlobs), preserving any content outside the block. Idempotent.
+   */
+  private writeGitignore(): void {
+    const p = path.join(this.cfg.dir, ".gitignore");
+    const managed = [GITIGNORE_BEGIN, ...GITIGNORE_BASE, ...(this.cfg.excludeGlobs ?? []), GITIGNORE_END].join("\n");
+    const existing = this.fs.existsSync(p) ? this.fs.readFileSync(p, "utf8") : "";
+    const blockRe = new RegExp(escapeRegExp(GITIGNORE_BEGIN) + "[\\s\\S]*?" + escapeRegExp(GITIGNORE_END));
+    let next: string;
+    if (blockRe.test(existing)) {
+      next = existing.replace(blockRe, managed);
+    } else if (existing.trim().length > 0) {
+      next = existing.replace(/\n*$/, "\n") + managed + "\n";
+    } else {
+      next = managed + "\n";
+    }
+    if (next !== existing) this.fs.writeFileSync(p, next);
+  }
+
+  /** Validate the remote is reachable with the configured credentials (no push). */
+  async testRemote(): Promise<void> {
+    if (!this.cfg.remoteUrl) throw new Error("No Git remote configured");
+    await git.getRemoteInfo2({
+      http,
+      url: this.cfg.remoteUrl,
+      forPush: true,
+      onAuth: () => ({ username: this.cfg.username || this.cfg.token || "", password: this.cfg.token || "" }),
+    });
+  }
+
+  /**
+   * Discard ALL history and keep only the current working tree as a single fresh
+   * commit, then (if a remote is set) force-push to replace remote history.
+   * isomorphic-git has no gc/repack, so re-initializing the repo is the only way to
+   * actually reclaim disk from old (binary) history. Destructive and irreversible.
+   */
+  async compactHistory(): Promise<{ pushed: boolean; pushError?: string }> {
+    const gitDir = this.gitDir();
+    if (this.fs.existsSync(gitDir)) this.fs.rmSync(gitDir, { recursive: true, force: true });
+    await this.init(); // fresh repo + re-seed .gitignore + re-wire remote
+    await this.commitAll("SelfSync snapshot");
+    if (!this.cfg.remoteUrl) return { pushed: false };
+    try {
+      await this.push(true);
+      return { pushed: true };
+    } catch (e) {
+      return { pushed: false, pushError: e instanceof Error ? e.message : String(e) };
     }
   }
 
@@ -159,7 +219,7 @@ export class GitBackup {
     return { commits, pushed, pushError };
   }
 
-  async push(): Promise<void> {
+  async push(force = false): Promise<void> {
     if (!this.cfg.remoteUrl) throw new Error("No Git remote configured");
     await git.push({
       fs: this.fs,
@@ -167,6 +227,7 @@ export class GitBackup {
       dir: this.cfg.dir,
       remote: "origin",
       ref: DEFAULT_BRANCH,
+      force,
       onAuth: () => ({ username: this.cfg.username || this.cfg.token || "", password: this.cfg.token || "" }),
     });
   }

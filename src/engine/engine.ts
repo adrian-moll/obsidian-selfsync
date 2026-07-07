@@ -43,6 +43,12 @@ export interface SyncOptions {
   exclude?: (path: string) => boolean;
   /** Called after each op executes, for progress display. */
   onProgress?: (done: number, total: number) => void;
+  /**
+   * Skip files larger than this many bytes (local or remote). Reading a whole large
+   * file into memory can OOM/crash Obsidian (notably on Android). 0/undefined = no
+   * limit. Skipped paths are left untouched on both sides (never deleted).
+   */
+  maxFileBytes?: number;
 }
 
 export interface SyncResult {
@@ -55,6 +61,8 @@ export interface SyncResult {
   conflictCopies: string[];
   /** ALL conflict-copy files currently present in the vault (any device). */
   existingConflicts: string[];
+  /** Paths skipped this cycle because they exceed the max file size. */
+  skippedLarge: string[];
 }
 
 /** Whether a vault path is a SelfSync conflict copy (e.g. `note (conflict …).md`). */
@@ -80,6 +88,8 @@ export async function scanVault(
   vault: VaultAdapter,
   base?: Map<string, { contentHash: string; size: number; mtime: number }>,
   exclude: (path: string) => boolean = () => false,
+  maxFileBytes = 0,
+  onSkipLarge?: (path: string, size: number) => void,
 ): Promise<Map<string, FileMeta>> {
   const paths = await vault.list();
   const out = new Map<string, FileMeta>();
@@ -87,6 +97,11 @@ export async function scanVault(
     if (exclude(path)) continue;
     const st = await vault.stat(path);
     if (!st) continue;
+    // Guard BEFORE readBinary so an oversized file is never materialized in memory.
+    if (maxFileBytes > 0 && st.size > maxFileBytes) {
+      onSkipLarge?.(path, st.size);
+      continue;
+    }
     const prior = base?.get(path);
     if (prior && prior.size === st.size && prior.mtime === st.mtime) {
       out.set(path, { path, contentHash: prior.contentHash, size: st.size, mtime: st.mtime });
@@ -118,29 +133,48 @@ export class SyncEngine {
 
   async sync(opts: SyncOptions): Promise<SyncResult> {
     const exclude = opts.exclude ?? (() => false);
+    const maxFileBytes = opts.maxFileBytes ?? 0;
+
+    // Load the manifest first so oversized *remote* entries can be skipped too —
+    // a download materializes the whole blob in memory and can OOM just like an
+    // upload (the reported Android large-file crash).
+    let { manifest, etag } = await this.manifests.load();
+
+    const skipped = new Set<string>();
+    if (maxFileBytes > 0) {
+      for (const [p, e] of Object.entries(manifest.entries)) {
+        if (!e.deleted && e.size > maxFileBytes) skipped.add(p);
+      }
+    }
+
     const local = await scanVault(
       this.deps.vault,
       opts.useMtimeShortcut ? await this.deps.state.toMap() : undefined,
       exclude,
+      maxFileBytes,
+      (p) => skipped.add(p),
     );
     const existingConflicts = [...local.keys()].filter(isConflictCopy);
+
+    // Oversized paths are hidden on ALL three sides (local/base/remote) so they are
+    // simply left in place — never read, never propagated, never deleted.
+    const effectiveExclude = skipped.size > 0 ? (p: string) => exclude(p) || skipped.has(p) : exclude;
 
     // Hide excluded paths from reconciliation; the full manifest is still committed
     // (so pre-existing excluded remote entries are preserved).
     const filterRemote = (m: Manifest): Manifest => {
       const entries: Record<string, ManifestEntry> = {};
-      for (const [p, e] of Object.entries(m.entries)) if (!exclude(p)) entries[p] = e;
+      for (const [p, e] of Object.entries(m.entries)) if (!effectiveExclude(p)) entries[p] = e;
       return { ...m, entries };
     };
     const reconcileAgainst = async (m: Manifest): Promise<Op[]> => {
-      const base = new Map([...(await this.deps.state.toMap())].filter(([p]) => !exclude(p)));
+      const base = new Map([...(await this.deps.state.toMap())].filter(([p]) => !effectiveExclude(p)));
       return reconcile(
         { local, base, remote: filterRemote(m) },
         { conflictCopyPath: (p) => conflictCopyPath(p, this.deps.deviceId, opts.timestampIso) },
       );
     };
 
-    let { manifest, etag } = await this.manifests.load();
     let ops = await reconcileAgainst(manifest);
 
     const outcomes: Outcomes = { merged: [], conflictCopies: [] };
@@ -152,6 +186,7 @@ export class SyncEngine {
       merged: outcomes.merged,
       conflictCopies: outcomes.conflictCopies,
       existingConflicts: [...new Set([...existingConflicts, ...outcomes.conflictCopies])],
+      skippedLarge: [...skipped],
     });
 
     if (ops.length === 0) return result(false);

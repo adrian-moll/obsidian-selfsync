@@ -19,6 +19,9 @@ export interface SyncUiState {
   lastError: string | null;
   conflicts: string[]; // conflict-copy paths from the latest sync
   activity: SyncActivityEntry[]; // most-recent first, capped
+  trackedFiles: number; // files under sync (non-deleted state entries)
+  gitPushPending: boolean; // committed but not yet pushed
+  skippedLarge: number; // files skipped last sync for exceeding the size limit
 }
 
 type Listener = (state: SyncUiState) => void;
@@ -35,6 +38,9 @@ export class SyncStore {
     lastError: null,
     conflicts: [],
     activity: [],
+    trackedFiles: 0,
+    gitPushPending: false,
+    skippedLarge: 0,
   };
   private readonly listeners = new Set<Listener>();
 

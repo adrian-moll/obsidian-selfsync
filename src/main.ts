@@ -12,6 +12,8 @@ import { DEFAULT_SETTINGS, type SelfSyncSettings, SelfSyncSettingTab } from "./s
 import { SelfSyncView, VIEW_TYPE_SELFSYNC } from "./ui/sync-view.js";
 import { FileHistoryView, VIEW_TYPE_FILE_HISTORY } from "./ui/file-history-view.js";
 import { ConflictResolveModal } from "./ui/conflict-resolve-modal.js";
+import { ConfirmModal } from "./ui/confirm-modal.js";
+import { Logger, createRotatingSink, type LogFileIO } from "./util/logger.js";
 import { canonicalPathOf } from "./engine/engine.js";
 import type { GitBackup } from "./git/git-backup.js";
 import { StatusController } from "./ui/status.js";
@@ -36,6 +38,8 @@ interface PersistedData {
 
 const CHANGE_DEBOUNCE_MS = 3000;
 const GIT_PUSH_THROTTLE_MS = 60_000;
+const LOG_FILE_NAME = "selfsync.log";
+const LOG_MAX_BYTES = 1024 * 1024; // rotate past ~1 MB, keep one previous generation
 
 /** DNS/connectivity failures — expected right after a mobile app resume. */
 function isTransientNetworkError(message: string): boolean {
@@ -80,6 +84,7 @@ export default class SelfSyncPlugin extends Plugin {
   private syncState: StateEntry[] = [];
   private stateStore!: JsonStateStore;
   private store = new SyncStore();
+  private logger = new Logger({ onEntry: (_lvl, msg) => this.store.log(msg) });
   private status?: StatusController;
   private scheduler!: SyncScheduler;
   private conflictRetries = 0;
@@ -90,6 +95,7 @@ export default class SelfSyncPlugin extends Plugin {
 
   async onload(): Promise<void> {
     await this.loadPersisted();
+    this.configureLogger();
     // Attempt a push on the first backup to drain any commits stranded from a
     // previous session (e.g. a push that timed out).
     this.gitPushPending = this.settings.git.enabled;
@@ -115,13 +121,19 @@ export default class SelfSyncPlugin extends Plugin {
                   fileHistory: () => void this.activateFileHistory(),
                 }
               : null,
+          () => this.testWebDavConnection(),
         ),
     );
 
     const ribbonEl = this.addRibbonIcon("refresh-cw", "SelfSync", () => void this.activateView());
     const statusBarEl = Platform.isDesktopApp ? this.addStatusBarItem() : undefined;
     this.status = new StatusController(ribbonEl, statusBarEl, this.store);
-    this.store.update({ backendLabel: this.backendLabel(), encrypted: this.settings.encryptionEnabled });
+    this.store.update({
+      backendLabel: this.backendLabel(),
+      encrypted: this.settings.encryptionEnabled,
+      trackedFiles: this.syncState.filter((e) => !e.deleted).length,
+      gitPushPending: this.gitPushPending,
+    });
 
     this.addCommand({ id: "open-panel", name: "Open sync panel", callback: () => void this.activateView() });
     this.addCommand({ id: "sync-now", name: "Sync now", callback: () => void this.scheduler.trigger("manual") });
@@ -146,6 +158,11 @@ export default class SelfSyncPlugin extends Plugin {
       );
       this.addCommand({ id: "git-commit-now", name: "Git backup: commit now", callback: () => void this.runGitBackup("manual") });
       this.addCommand({ id: "git-push-now", name: "Git backup: push now", callback: () => void this.runGitBackup("manual", true) });
+      this.addCommand({
+        id: "git-compact-history",
+        name: "Git backup: compact history to snapshot",
+        callback: () => this.confirmCompactHistory(),
+      });
       this.addCommand({
         id: "show-file-history",
         name: "Show file history (Git)",
@@ -215,6 +232,77 @@ export default class SelfSyncPlugin extends Plugin {
     workspace.revealLeaf(leaf);
   }
 
+  // --- Logging ---------------------------------------------------------------
+
+  /** Apply the debug-logging setting: raise the level and attach the file sink. */
+  private configureLogger(): void {
+    const debug = this.settings.debugLogging;
+    this.logger.setLevel(debug ? "debug" : "info");
+    this.logger.setFileSink(debug ? this.buildLogFileSink() : null);
+  }
+
+  /** A rotating file sink under the plugin folder (mobile-safe via DataAdapter). */
+  private buildLogFileSink(): (line: string) => Promise<void> {
+    const adapter = this.app.vault.adapter;
+    const dir = this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
+    const logPath = `${dir}/${LOG_FILE_NAME}`;
+    const backup = `${logPath}.1`;
+    const io: LogFileIO = {
+      size: async () => {
+        try {
+          return (await adapter.stat(logPath))?.size ?? 0;
+        } catch {
+          return 0;
+        }
+      },
+      append: (line) => adapter.append(logPath, line),
+      rotate: async () => {
+        try {
+          if (await adapter.exists(backup)) await adapter.remove(backup);
+          if (await adapter.exists(logPath)) await adapter.rename(logPath, backup);
+        } catch {
+          /* best-effort */
+        }
+      },
+    };
+    return createRotatingSink(io, LOG_MAX_BYTES);
+  }
+
+  // --- Connection tests ------------------------------------------------------
+
+  /** Validate the WebDAV endpoint + credentials (for the settings/panel button). */
+  async testWebDavConnection(): Promise<{ ok: boolean; message: string }> {
+    const backend = this.buildBackend();
+    if (!backend) return { ok: false, message: "WebDAV not configured — set a URL first." };
+    try {
+      await backend.testConnection();
+      this.logger.info("WebDAV connection OK");
+      return { ok: true, message: "WebDAV connection OK" };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.logger.warn("WebDAV connection failed: " + msg);
+      return { ok: false, message: "WebDAV connection failed: " + msg };
+    }
+  }
+
+  /** Validate the Git remote is reachable with the configured credentials. */
+  async testGitConnection(): Promise<{ ok: boolean; message: string }> {
+    if (!Platform.isDesktopApp) return { ok: false, message: "Git backup is desktop-only." };
+    if (!this.settings.git.enabled) return { ok: false, message: "Enable Git backup first." };
+    if (!this.settings.git.remoteUrl) return { ok: false, message: "Set a Git remote URL first." };
+    try {
+      const backup = await this.getGitBackup();
+      if (!backup) return { ok: false, message: "Git backup unavailable on this device." };
+      await backup.testRemote();
+      this.logger.info("Git connection OK");
+      return { ok: true, message: "Git connection OK" };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.logger.warn("Git connection failed: " + msg);
+      return { ok: false, message: "Git connection failed: " + msg };
+    }
+  }
+
   // --- Git backup (desktop only) ---------------------------------------------
 
   /** Construct a ready GitBackup, or null if unavailable (mobile/disabled/no fs). */
@@ -231,16 +319,69 @@ export default class SelfSyncPlugin extends Plugin {
       token: g.token || undefined,
       authorName: g.authorName || undefined,
       authorEmail: g.authorEmail || undefined,
+      excludeGlobs: g.excludeGlobs,
     });
     await backup.init();
     return backup;
   }
 
+  /** Confirm, then discard all Git history and keep only a current snapshot. */
+  confirmCompactHistory(): void {
+    if (!Platform.isDesktopApp || !this.settings.git.enabled) {
+      new Notice("SelfSync: enable Git backup in settings (desktop only).");
+      return;
+    }
+    new ConfirmModal(this.app, {
+      title: "Compact Git history?",
+      body:
+        "This permanently discards ALL Git history and keeps only the current vault " +
+        "state as a single commit, then force-pushes to the remote. Past versions can " +
+        "no longer be restored. This cannot be undone.",
+      confirmText: "Discard history & snapshot",
+      onConfirm: () => void this.compactGitHistory(),
+    }).open();
+  }
+
+  private async compactGitHistory(): Promise<void> {
+    if (this.gitBusy) {
+      new Notice("SelfSync: Git is busy — try again in a moment.");
+      return;
+    }
+    this.gitBusy = true;
+    try {
+      const backup = await this.getGitBackup();
+      if (!backup) {
+        new Notice("SelfSync: Git backup unavailable on this device.");
+        return;
+      }
+      this.logger.info("Git: compacting history to a snapshot…");
+      const res = await backup.compactHistory();
+      this.gitPushPending = !res.pushed && !!this.settings.git.remoteUrl;
+      this.store.update({ gitPushPending: this.gitPushPending });
+      if (res.pushed) {
+        this.logger.info("Git: history compacted and force-pushed");
+        new Notice("SelfSync: Git history compacted and pushed.");
+      } else if (res.pushError) {
+        this.logger.warn("Git: snapshot committed but push failed: " + res.pushError);
+        new Notice("SelfSync: snapshot committed locally; push failed — retry later.");
+      } else {
+        this.logger.info("Git: history compacted (no remote)");
+        new Notice("SelfSync: Git history compacted.");
+      }
+    } catch (e) {
+      const m = e instanceof Error ? e.message : String(e);
+      this.logger.error("Git compaction error: " + m);
+      new Notice("SelfSync Git compaction error: " + m);
+    } finally {
+      this.gitBusy = false;
+    }
+  }
+
   private logPushError(m: string, reason: string): void {
     if (isTransientNetworkError(m) || /timed?\s*out/i.test(m)) {
-      this.store.log("Git: push deferred — will retry (" + m + ")");
+      this.logger.info("Git: push deferred — will retry (" + m + ")");
     } else {
-      this.store.log("Git push error: " + m);
+      this.logger.warn("Git push error: " + m);
       if (reason === "manual") new Notice("SelfSync Git push error: " + m);
     }
   }
@@ -264,11 +405,11 @@ export default class SelfSyncPlugin extends Plugin {
         chunkSize: this.settings.git.pushChunkSize,
         push: doPush,
       });
-      if (res.commits > 0) this.store.log(`Git: committed ${res.commits} batch(es)`);
+      if (res.commits > 0) this.logger.info(`Git: committed ${res.commits} batch(es)`);
 
       if (res.pushed) {
         this.gitPushPending = false;
-        this.store.log("Git: pushed");
+        this.logger.info("Git: pushed");
       } else if (res.pushError) {
         this.gitPushPending = true;
         this.logPushError(res.pushError, reason);
@@ -282,7 +423,7 @@ export default class SelfSyncPlugin extends Plugin {
         try {
           await backup.push();
           this.gitPushPending = false;
-          this.store.log("Git: pushed");
+          this.logger.info("Git: pushed");
         } catch (e) {
           this.gitPushPending = true;
           this.logPushError(e instanceof Error ? e.message : String(e), reason);
@@ -290,11 +431,12 @@ export default class SelfSyncPlugin extends Plugin {
       }
 
       if (res.commits === 0 && !this.gitPushPending && reason === "manual") {
-        this.store.log("Git: up to date");
+        this.logger.info("Git: up to date");
       }
+      this.store.update({ gitPushPending: this.gitPushPending });
     } catch (e) {
       const m = e instanceof Error ? e.message : String(e);
-      this.store.log("Git commit error: " + m);
+      this.logger.error("Git commit error: " + m);
       if (reason === "manual") new Notice("SelfSync Git error: " + m);
     } finally {
       this.gitBusy = false;
@@ -387,11 +529,14 @@ export default class SelfSyncPlugin extends Plugin {
           this.store.update({ status: "syncing", detail: `Syncing… ${done}/${total}` });
         }
       };
+      const maxFileBytes = this.settings.maxFileMB > 0 ? this.settings.maxFileMB * 1024 * 1024 : 0;
+      this.logger.debug(`Sync start (${trigger}); maxFileMB=${this.settings.maxFileMB}`);
       const res = await engine.sync({
         timestampIso: new Date().toISOString(),
         useMtimeShortcut: true,
         exclude,
         onProgress,
+        maxFileBytes,
       });
       const nowIso = new Date().toISOString();
 
@@ -406,10 +551,10 @@ export default class SelfSyncPlugin extends Plugin {
         });
         if (this.conflictRetries < 3) {
           this.conflictRetries++;
-          this.store.log(`Remote changed mid-sync — retrying (${this.conflictRetries}/3)`);
+          this.logger.info(`Remote changed mid-sync — retrying (${this.conflictRetries}/3)`);
           this.scheduler.requestDebounced("retry", 1500);
         } else {
-          this.store.log("Still contended after 3 retries — will sync on next change");
+          this.logger.warn("Still contended after 3 retries — will sync on next change");
         }
         return;
       }
@@ -424,10 +569,18 @@ export default class SelfSyncPlugin extends Plugin {
         detail: existing.length ? `${existing.length} conflict file(s)` : "Idle",
         lastSyncIso: nowIso,
         conflicts: existing,
+        trackedFiles: this.syncState.filter((e) => !e.deleted).length,
+        skippedLarge: res.skippedLarge.length,
       });
-      this.store.log(res.ops.length ? `Synced: ${summarizeOps(res.ops)}` : "Up to date");
+      this.logger.info(res.ops.length ? `Synced: ${summarizeOps(res.ops)}` : "Up to date");
       if (res.merged.length) {
-        this.store.log(`Auto-merged ${res.merged.length}: ${res.merged.slice(0, 4).join(", ")}`);
+        this.logger.info(`Auto-merged ${res.merged.length}: ${res.merged.slice(0, 4).join(", ")}`);
+      }
+      if (res.skippedLarge.length) {
+        this.logger.warn(
+          `Skipped ${res.skippedLarge.length} file(s) over ${this.settings.maxFileMB} MB: ` +
+            res.skippedLarge.slice(0, 4).join(", "),
+        );
       }
       // Notify only when THIS sync created a new conflict copy.
       if (res.conflictCopies.length) {
@@ -442,14 +595,14 @@ export default class SelfSyncPlugin extends Plugin {
         // Offline / DNS not ready (common right after a mobile app resume).
         // Recover quietly with a short backoff instead of alarming the user.
         this.store.update({ status: "idle", detail: "Offline — will retry" });
-        if (this.netRetries === 0) this.store.log("Offline — will retry when the connection returns");
+        if (this.netRetries === 0) this.logger.info("Offline — will retry when the connection returns");
         if (this.netRetries < 5) {
           this.netRetries++;
           this.scheduler.requestDebounced("net-retry", 8000);
         }
       } else {
         this.store.update({ status: "error", detail: "Error", lastError: msg });
-        this.store.log("Error: " + msg);
+        this.logger.error("Error: " + msg);
         if (trigger === "manual") new Notice("SelfSync error: " + msg);
       }
     }
@@ -463,7 +616,8 @@ export default class SelfSyncPlugin extends Plugin {
       await this.savePersisted();
     });
     await this.savePersisted();
-    this.store.log("Local sync state reset — next sync re-indexes against the backend");
+    this.store.update({ trackedFiles: 0 });
+    this.logger.info("Local sync state reset — next sync re-indexes against the backend");
     new Notice("SelfSync: local sync state reset. Run 'Sync now' to re-index.");
   }
 
@@ -537,6 +691,7 @@ export default class SelfSyncPlugin extends Plugin {
 
   /** Called by the settings tab after edits. */
   async saveSettings(): Promise<void> {
+    this.configureLogger();
     this.store.update({ backendLabel: this.backendLabel(), encrypted: this.settings.encryptionEnabled });
     await this.savePersisted();
   }
