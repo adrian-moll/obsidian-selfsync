@@ -35,7 +35,9 @@ export class ObsidianVaultAdapter implements VaultAdapter {
   }
 
   async writeBinary(path: string, data: ArrayBuffer): Promise<void> {
-    await this.adapter.writeBinary(normalizePath(path), data);
+    const norm = normalizePath(path);
+    await this.ensureParentDir(norm);
+    await this.adapter.writeBinary(norm, data);
   }
 
   async remove(path: string): Promise<void> {
@@ -43,7 +45,32 @@ export class ObsidianVaultAdapter implements VaultAdapter {
   }
 
   async rename(from: string, to: string): Promise<void> {
-    await this.adapter.rename(normalizePath(from), normalizePath(to));
+    const dest = normalizePath(to);
+    await this.ensureParentDir(dest);
+    await this.adapter.rename(normalizePath(from), dest);
+  }
+
+  /**
+   * Ensure every ancestor folder of a (normalized) path exists. Obsidian's mobile
+   * adapter rejects writes into a missing folder ("Parent folder doesn't exist"),
+   * so we create each level before writing a downloaded/renamed file.
+   */
+  private async ensureParentDir(normalizedPath: string): Promise<void> {
+    const idx = normalizedPath.lastIndexOf("/");
+    if (idx <= 0) return; // vault root — nothing to create
+    const dir = normalizedPath.slice(0, idx);
+    const parts = dir.split("/");
+    let cur = "";
+    for (const part of parts) {
+      cur = cur ? `${cur}/${part}` : part;
+      if (!(await this.adapter.exists(cur))) {
+        try {
+          await this.adapter.mkdir(cur);
+        } catch {
+          // Racy create or already exists between exists() and mkdir() — ignore.
+        }
+      }
+    }
   }
 
   async exists(path: string): Promise<boolean> {
