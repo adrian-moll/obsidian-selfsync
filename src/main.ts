@@ -111,6 +111,11 @@ export default class SelfSyncPlugin extends Plugin {
 
     this.addCommand({ id: "open-panel", name: "Open sync panel", callback: () => void this.activateView() });
     this.addCommand({ id: "sync-now", name: "Sync now", callback: () => void this.scheduler.trigger("manual") });
+    this.addCommand({
+      id: "reset-sync-state",
+      name: "Reset local sync state (re-index on next sync)",
+      callback: () => void this.resetSyncState(),
+    });
 
     this.addSettingTab(new SelfSyncSettingTab(this.app, this));
 
@@ -411,6 +416,18 @@ export default class SelfSyncPlugin extends Plugin {
         if (trigger === "manual") new Notice("SelfSync error: " + msg);
       }
     }
+  }
+
+  /** Clear the local sync index so the next sync re-indexes against the backend. */
+  private async resetSyncState(): Promise<void> {
+    this.syncState = [];
+    this.stateStore = new JsonStateStore(this.syncState, async (all) => {
+      this.syncState = all;
+      await this.savePersisted();
+    });
+    await this.savePersisted();
+    this.store.log("Local sync state reset — next sync re-indexes against the backend");
+    new Notice("SelfSync: local sync state reset. Run 'Sync now' to re-index.");
   }
 
   private mergeSettings(raw: Partial<SelfSyncSettings> | null | undefined): SelfSyncSettings {
