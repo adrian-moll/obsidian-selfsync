@@ -28,7 +28,7 @@ export class ConflictResolveModal extends Modal {
     this.modalEl.addClass("selfsync-modal");
     const { contentEl } = this;
     contentEl.addClass("selfsync-resolve");
-    contentEl.createEl("h3", { text: `Resolve conflict: ${this.opts.canonicalPath}` });
+    contentEl.createEl("h3", { text: `SelfSync — Resolve conflict: ${this.opts.canonicalPath}` });
     contentEl.createEl("p", {
       cls: "setting-item-description",
       text: `Left = current file. Right = conflict copy (${this.opts.conflictPath}). Changed lines are highlighted.`,

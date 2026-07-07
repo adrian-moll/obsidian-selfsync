@@ -121,7 +121,7 @@ export class FileHistoryView extends ItemView {
     c.addClass("selfsync-view");
 
     const head = c.createDiv({ cls: "selfsync-section-head" });
-    head.createEl("h4", { text: "File history" });
+    head.createEl("h4", { text: "SelfSync — File history" });
     head.createEl("button", { text: "Refresh" }).onclick = () => void this.reload();
 
     const s = this.state;
@@ -260,7 +260,7 @@ class VersionModal extends Modal {
     this.modalEl.addClass("selfsync-modal");
     const { contentEl } = this;
     contentEl.addClass("selfsync-resolve");
-    contentEl.createEl("h3", { text: this.opts.title });
+    contentEl.createEl("h3", { text: `SelfSync — ${this.opts.title}` });
 
     const body = contentEl.createDiv();
     const renderBody = () => {
@@ -316,7 +316,7 @@ class DiffModal extends Modal {
     this.modalEl.addClass("selfsync-modal");
     const { contentEl } = this;
     contentEl.addClass("selfsync-resolve");
-    contentEl.createEl("h3", { text: "Compare versions" });
+    contentEl.createEl("h3", { text: "SelfSync — Compare versions" });
     const labels = contentEl.createDiv({ cls: "selfsync-diff-labels" });
     labels.createDiv({ cls: "selfsync-diff-cell", text: `◀ ${this.opts.leftLabel}` });
     labels.createDiv({ cls: "selfsync-diff-cell", text: `${this.opts.rightLabel} ▶` });

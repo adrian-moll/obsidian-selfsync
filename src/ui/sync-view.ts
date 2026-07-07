@@ -45,6 +45,8 @@ export class SelfSyncView extends ItemView {
     c.empty();
     c.addClass("selfsync-view");
 
+    c.createEl("h4", { text: "SelfSync" });
+
     const header = c.createDiv({ cls: "selfsync-status-header" });
     header.createSpan({ cls: `selfsync-status-dot is-${s.status}` });
     header.createSpan({ text: s.detail || s.status });
