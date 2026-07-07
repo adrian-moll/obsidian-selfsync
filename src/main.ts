@@ -13,6 +13,7 @@ import { SelfSyncView, VIEW_TYPE_SELFSYNC } from "./ui/sync-view.js";
 import { StatusController } from "./ui/status.js";
 import { SyncStore } from "./ui/sync-store.js";
 import { ObsidianVaultAdapter } from "./vault/obsidian-vault-adapter.js";
+import { ObsidianBaseStore } from "./vault/obsidian-base-store.js";
 import { JsonStateStore } from "./engine/state-db.js";
 import { SyncEngine } from "./engine/engine.js";
 import { SyncScheduler } from "./engine/scheduler.js";
@@ -41,7 +42,7 @@ function describeOp(o: Op): string {
     case "deleteRemote":
       return `del-remote ${o.path}`;
     case "conflict":
-      return `conflict ${o.path}`;
+      return `concurrent-edit ${o.path}`;
     case "move":
       return `move ${o.from} → ${o.to}`;
   }
@@ -191,6 +192,7 @@ export default class SelfSyncPlugin extends Plugin {
         state: this.stateStore,
         deviceId: this.settings.deviceId,
         naming,
+        baseStore: new ObsidianBaseStore(this.app),
       });
       const res = await engine.sync({ timestampIso: new Date().toISOString(), useMtimeShortcut: true, exclude });
       const nowIso = new Date().toISOString();
@@ -210,10 +212,7 @@ export default class SelfSyncPlugin extends Plugin {
       }
       this.conflictRetries = 0;
 
-      const conflictPaths = res.ops
-        .filter((o): o is Extract<Op, { kind: "conflict" }> => o.kind === "conflict")
-        .map((o) => o.conflictCopyPath);
-
+      const conflictPaths = res.conflictCopies;
       this.store.update({
         status: conflictPaths.length ? "conflicts" : "idle",
         detail: conflictPaths.length ? `${conflictPaths.length} conflict(s)` : "Idle",
@@ -221,8 +220,11 @@ export default class SelfSyncPlugin extends Plugin {
         conflicts: conflictPaths,
       });
       this.store.log(res.ops.length ? `Synced: ${summarizeOps(res.ops)}` : "Up to date");
+      if (res.merged.length) {
+        this.store.log(`Auto-merged ${res.merged.length}: ${res.merged.slice(0, 4).join(", ")}`);
+      }
       if (conflictPaths.length) {
-        new Notice(`SelfSync: ${conflictPaths.length} conflict copy(ies) created — see the Sync panel.`);
+        new Notice(`SelfSync: ${conflictPaths.length} conflict copy(ies) — overlapping edits, see the Sync panel.`);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

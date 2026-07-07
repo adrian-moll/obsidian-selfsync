@@ -89,6 +89,15 @@ For each logical path, compare **local (L)**, **base (B)**, **remote/manifest (R
 | new path, hash matches an existing tombstoned/removed path | **Rename/move** (rewrite manifest key, no re-upload) |
 | L == B == R | No-op |
 
+**Auto-merge (text):** when a conflict is detected for a mergeable text file
+(`.md`/`.txt`/…) and a common ancestor is available, the engine attempts a **3-way
+line merge** (`merge.ts`, via node-diff3). If the two sides changed different
+regions, the merged result is written locally and uploaded — no conflict copy. The
+ancestor is the last-synced content, kept device-locally in a **`BaseStore`**
+(outside the synced vault); it's updated after each upload/download and consulted
+on conflict. Overlapping edits (or non-text files, or no ancestor) fall back to
+keep-both.
+
 **Keep-both (conflict) procedure:** keep the incoming remote version at the
 canonical path and write the local version to a conflict copy, e.g.
 `note (conflict <device> <ISO-timestamp>).md`. Both are then tracked normally so

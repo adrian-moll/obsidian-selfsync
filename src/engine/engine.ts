@@ -18,7 +18,10 @@ import { reconcile } from "./reconciler.js";
 import { cloneManifest, nextVersion, tombstone } from "./manifest.js";
 import { ManifestStore } from "./manifest-store.js";
 import type { BlobNaming } from "./naming.js";
+import type { BaseStore } from "./base-store.js";
+import { isMergeableText, mergeText } from "./merge.js";
 import { sha256 } from "../util/hash.js";
+import { utf8 } from "../backend/http.js";
 
 export interface SyncDeps {
   vault: VaultAdapter;
@@ -27,6 +30,8 @@ export interface SyncDeps {
   deviceId: string;
   /** Maps vault paths to backend blob keys (mirror vs opaque layout). */
   naming: BlobNaming;
+  /** Optional: last-synced content store enabling 3-way auto-merge of text. */
+  baseStore?: BaseStore;
 }
 
 export interface SyncOptions {
@@ -42,6 +47,15 @@ export interface SyncResult {
   ops: Op[];
   committed: boolean;
   conflict: boolean; // true if aborted due to a concurrent manifest write
+  /** Paths whose concurrent edits were auto-merged (no conflict copy). */
+  merged: string[];
+  /** Conflict-copy paths created for genuinely overlapping edits. */
+  conflictCopies: string[];
+}
+
+interface Outcomes {
+  merged: string[];
+  conflictCopies: string[];
 }
 
 /** Thrown internally when the manifest commit loses a concurrency race. */
@@ -107,12 +121,15 @@ export class SyncEngine {
       { conflictCopyPath: (p) => conflictCopyPath(p, this.deps.deviceId, opts.timestampIso) },
     );
 
-    if (ops.length === 0) return { ops, committed: false, conflict: false };
+    const outcomes: Outcomes = { merged: [], conflictCopies: [] };
+    if (ops.length === 0) {
+      return { ops, committed: false, conflict: false, merged: [], conflictCopies: [] };
+    }
 
     const working = cloneManifest(manifest);
     const stateMutations: Array<() => Promise<void>> = [];
     for (const op of ops) {
-      await this.applyOp(op, working, stateMutations);
+      await this.applyOp(op, working, stateMutations, outcomes);
     }
 
     try {
@@ -120,19 +137,30 @@ export class SyncEngine {
     } catch (err) {
       if (err instanceof ConditionalWriteError) {
         // Lost the race — leave State DB untouched; next cycle reconciles anew.
-        return { ops, committed: false, conflict: true };
+        return { ops, committed: false, conflict: true, merged: [], conflictCopies: [] };
       }
       throw err;
     }
 
     for (const mutate of stateMutations) await mutate();
-    return { ops, committed: true, conflict: false };
+    return { ops, committed: true, conflict: false, merged: outcomes.merged, conflictCopies: outcomes.conflictCopies };
+  }
+
+  /** Store the agreed content of a text file so future conflicts can 3-way merge. */
+  private async rememberBase(path: string, data: ArrayBuffer): Promise<void> {
+    if (this.deps.baseStore && isMergeableText(path)) await this.deps.baseStore.set(path, data);
+  }
+
+  /** Drop a file's stored base content. */
+  private async forgetBase(path: string): Promise<void> {
+    if (this.deps.baseStore) await this.deps.baseStore.delete(path);
   }
 
   private async applyOp(
     op: Op,
     working: Manifest,
     stateMutations: Array<() => Promise<void>>,
+    outcomes: Outcomes,
   ): Promise<void> {
     const { vault, backend, state } = this.deps;
 
@@ -148,6 +176,7 @@ export class SyncEngine {
         const version = nextVersion(working, op.path);
         working.entries[op.path] = { contentHash, version, blobKey, size, mtime, deleted: false };
         stateMutations.push(() => state.put({ path: op.path, contentHash, size, mtime, version, blobKey }));
+        stateMutations.push(() => this.rememberBase(op.path, data));
         break;
       }
 
@@ -166,6 +195,7 @@ export class SyncEngine {
             blobKey: entry.blobKey,
           }),
         );
+        stateMutations.push(() => this.rememberBase(op.path, data));
         break;
       }
 
@@ -174,12 +204,14 @@ export class SyncEngine {
         if (entry?.blobKey) await backend.remove(entry.blobKey).catch(() => {});
         tombstone(working, op.path);
         stateMutations.push(() => state.delete(op.path));
+        stateMutations.push(() => this.forgetBase(op.path));
         break;
       }
 
       case "deleteLocal": {
         await vault.remove(op.path);
         stateMutations.push(() => state.delete(op.path));
+        stateMutations.push(() => this.forgetBase(op.path));
         break;
       }
 
@@ -187,7 +219,32 @@ export class SyncEngine {
         const entry = working.entries[op.path];
         const remoteData = await backend.read(entry.blobKey);
         const localData = await vault.readBinary(op.path);
-        // Save the local version as a conflict copy, take remote as canonical.
+
+        // Try a 3-way auto-merge for text notes edited in different regions.
+        if (this.deps.baseStore && isMergeableText(op.path)) {
+          const baseData = await this.deps.baseStore.get(op.path);
+          if (baseData) {
+            const merged = mergeText(utf8.decode(baseData), utf8.decode(localData), utf8.decode(remoteData));
+            if (merged !== null) {
+              const mergedBuf = utf8.encode(merged);
+              await vault.writeBinary(op.path, mergedBuf);
+              const contentHash = await sha256(mergedBuf);
+              const st2 = await vault.stat(op.path);
+              const size = st2?.size ?? mergedBuf.byteLength;
+              const mtime = st2?.mtime ?? 0;
+              const blobKey = await this.deps.naming.blobKey(op.path);
+              await backend.write(blobKey, mergedBuf);
+              const version = nextVersion(working, op.path);
+              working.entries[op.path] = { contentHash, version, blobKey, size, mtime, deleted: false };
+              stateMutations.push(() => state.put({ path: op.path, contentHash, size, mtime, version, blobKey }));
+              stateMutations.push(() => this.rememberBase(op.path, mergedBuf));
+              outcomes.merged.push(op.path);
+              break;
+            }
+          }
+        }
+
+        // Keep both: remote becomes canonical, local saved as a conflict copy.
         await vault.writeBinary(op.conflictCopyPath, localData);
         await vault.writeBinary(op.path, remoteData);
         const st = await vault.stat(op.path);
@@ -201,6 +258,8 @@ export class SyncEngine {
             blobKey: entry.blobKey,
           }),
         );
+        stateMutations.push(() => this.rememberBase(op.path, remoteData));
+        outcomes.conflictCopies.push(op.conflictCopyPath);
         // Upload the conflict copy so the other device sees it too.
         const copyHash = await sha256(localData);
         const copyStat = await vault.stat(op.conflictCopyPath);
@@ -250,6 +309,12 @@ export class SyncEngine {
             version,
             blobKey: newBlobKey,
           });
+          // Carry the base content along with the rename.
+          if (this.deps.baseStore) {
+            const b = await this.deps.baseStore.get(op.from);
+            if (b) await this.deps.baseStore.set(op.to, b);
+            await this.deps.baseStore.delete(op.from);
+          }
         });
         break;
       }

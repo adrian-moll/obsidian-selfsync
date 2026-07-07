@@ -36,13 +36,19 @@ host cannot hide names it must store. A `BlobNaming` strategy selects the layout
 from the encryption setting; the manifest remains the source of truth for
 tombstones/versions/ETags in both modes. See `06-backends.md`.
 
-## D3 — Conflict resolution: keep both
+## D3 — Conflict resolution: auto-merge text, else keep both
 
-**Choice:** The default conflict resolution is a **conflict copy** ("keep both").
+**Choice:** For text notes, concurrent edits are **3-way auto-merged** when they
+touch different regions; only genuinely overlapping edits (or non-text files) fall
+back to a **conflict copy** ("keep both"). *(Auto-merge added in M2.x; keep-both
+was the original decision.)*
 
-**Rationale:** Never lose data. When two devices edit the same file, both versions
-survive and the user merges manually. This is the safest default and the one the
-user selected.
+**Rationale:** Never lose data — auto-merge and keep-both are both non-destructive.
+Auto-merge removes the friction of conflict copies for the common case (editing
+different parts of a note on two devices), which was painful in real multi-device
+use. Merging needs the common ancestor, so the last-synced content of text files
+is kept device-locally in a `BaseStore` (see `05-sync-engine.md`). Overlaps still
+keep both, so nothing is silently resolved incorrectly.
 
 ## D4 — Architecture: one unified engine over a thin backend abstraction
 

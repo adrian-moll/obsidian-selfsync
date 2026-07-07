@@ -48,7 +48,10 @@
     retries up to 3× with a short delay, so transient startup contention converges
     quietly instead of surfacing.
   - **Copyable activity log** in the Sync view (Copy button + selectable textarea).
-  - 48 tests green.
+  - **3-way auto-merge for text notes (D3 amended):** concurrent edits to
+    different regions merge automatically (via a device-local `BaseStore` +
+    node-diff3); only overlapping edits keep both. Validated on iPad + Android.
+  - 55 tests green.
   - **Crash-safety (NFR1)** is already provided by the engine: atomic conditional
     manifest commit + reconcile-on-startup + "absence is never a deletion". A
     *persistent* journal (faster resume) is deferred — an optimization, not

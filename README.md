@@ -6,7 +6,8 @@ Self-hosted, **bring-your-own-backend** sync and backup for [Obsidian](https://o
   kDrive) or a self-hosted **CouchDB** (single Docker container).
 - **Optional end-to-end encryption** — with E2EE on, the host only ever sees
   ciphertext, and file names/paths stay private.
-- **Keep-both conflict handling** — nothing is ever silently overwritten.
+- **Smart conflict handling** — concurrent edits to different parts of a note
+  auto-merge (3-way); only overlapping edits keep both. Nothing is silently lost.
 - **Crash-safe, mobile-first engine** — reconciles on startup; an interrupted sync
   never corrupts the vault or the remote.
 - **Optional desktop-only Git backup** — auto-versions your vault to a Git remote,
