@@ -12,7 +12,35 @@ Self-hosted, **bring-your-own-backend** sync and backup for [Obsidian](https://o
 - **Optional desktop-only Git backup** — auto-versions your vault to a Git remote,
   with an in-app history/restore view.
 
-> Status: **early development (M0 scaffold).** Not yet functional for real syncing.
+> Status: **working (desktop).** WebDAV sync against real kDrive — create / edit /
+> delete / rename / keep-both conflicts — plus the trigger model (startup /
+> interval / on-change / background) and a live status panel. Mobile validation,
+> encryption (M3), CouchDB (M4), and Git backup (M5) are in progress.
+
+## Install
+
+SelfSync isn't in the community plugin store; install it with **BRAT**
+([Beta Reviewer's Auto-update Tool](https://github.com/TfTHacker/obsidian42-brat)),
+which works on desktop **and** mobile and auto-updates:
+
+1. Install and enable **BRAT** from Community Plugins.
+2. BRAT → **Add beta plugin** → enter `adrian-moll/obsidian-selfsync`.
+3. Enable **SelfSync** in Community Plugins.
+4. Repeat on each device (Windows, iPad, Android).
+
+Then open **Settings → SelfSync**: set your WebDAV URL, username, and an
+**app-specific password** (for kDrive), and a sync folder. Open the **SelfSync**
+panel from the ribbon and hit **Sync now**.
+
+<details><summary>Manual install (fallback)</summary>
+
+Copy `main.js`, `manifest.json`, and `styles.css` from the
+[latest release](https://github.com/adrian-moll/obsidian-selfsync/releases) into
+`<vault>/.obsidian/plugins/selfsync/`, then enable the plugin.
+</details>
+
+> Note: `.obsidian` config sync is **off by default** (it churns across devices).
+> Notes and attachments sync; enable config sync in settings if you want it.
 
 ## Documentation
 

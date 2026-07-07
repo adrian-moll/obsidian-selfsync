@@ -15,10 +15,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm test
+      - run: npm run typecheck
+      - run: npm test # live kDrive tests skip without credentials
       - run: npm run build
       - name: Create GitHub release with plugin assets
         env:
