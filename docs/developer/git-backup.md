@@ -13,13 +13,15 @@ transport (D7). It lets the user browse history and restore older note versions
 > commits with view/restore. `.gitignore` is seeded to exclude SelfSync's own
 > (`.obsidian/plugins/selfsync/`) data; `.git/**` is excluded from *sync*.
 >
-> **Chunked backup:** commits + pushes in batches of `git.pushChunkSize` files
-> (default 100) so each push is a small pack — large backups get through a short
-> server/proxy timeout instead of one huge push. Pushes are throttled and a
-> pending push (e.g. one that timed out) is retried on later syncs until it lands.
-> If pushes still time out, lower the batch size, or push over SSH / raise the
-> Gitea/reverse-proxy request timeout (git-over-HTTP via isomorphic-git is weak on
-> very large pushes). Tested headlessly against a real temp repo.
+> **Chunked backup:** commits + pushes in batches, cutting a batch at
+> `git.pushChunkSize` files **or** ~25 MB of content (`DEFAULT_MAX_PUSH_BYTES`),
+> whichever comes first — bounding by *bytes* (not just file count) is what keeps
+> each push a small pack isomorphic-git can complete, since a first backup with
+> large attachments would otherwise be one huge push that stalls/resets. Pushes are
+> throttled and a pending push is retried on later syncs until it lands. If pushes
+> still fail, push over SSH or raise the Gitea/reverse-proxy request timeout
+> (git-over-HTTP via isomorphic-git is weak on very large single pushes). Tested
+> headlessly against a real temp repo (incl. byte-based splitting).
 
 ## Why desktop-only
 

@@ -10,6 +10,10 @@ import * as nodeFs from "fs";
 import * as path from "path";
 
 const DEFAULT_BRANCH = "main";
+// Cap the bytes committed (and therefore pushed) per batch. isomorphic-git's
+// HTTP push is weak on large packs — a single big push (e.g. a first backup with
+// large attachments) can stall/reset — so we keep each push a digestible size.
+const DEFAULT_MAX_PUSH_BYTES = 25 * 1024 * 1024;
 
 export interface GitConfig {
   /** Absolute path to the vault (FileSystemAdapter.getBasePath()). */
@@ -88,17 +92,20 @@ export class GitBackup {
   }
 
   /**
-   * Commit all changes and (optionally) push, in chunks: stage+commit+push each
-   * batch of `chunkSize` files so each push is a small pack. This lets large
-   * backups get through a short server/proxy timeout instead of one huge push.
-   * On a push failure, stops pushing further chunks (commits still complete
-   * locally) and reports it so the caller can retry later.
+   * Commit all changes and (optionally) push, in batches: stage+commit+push each
+   * batch, cutting a batch when it reaches `chunkSize` files **or**
+   * `maxBytesPerCommit` bytes. Bounding by bytes (not just file count) keeps each
+   * push a small pack that isomorphic-git can complete — a first backup with large
+   * attachments would otherwise be one huge push that stalls/resets. A file larger
+   * than the byte cap is committed on its own. On a push failure, stops pushing
+   * further batches (commits still complete locally) and reports it for later retry.
    */
   async backup(
     message: string,
-    opts: { chunkSize?: number; push: boolean },
+    opts: { chunkSize?: number; maxBytesPerCommit?: number; push: boolean },
   ): Promise<{ commits: number; pushed: boolean; pushError?: string }> {
-    const chunkSize = Math.max(1, opts.chunkSize ?? 100);
+    const maxFiles = Math.max(1, opts.chunkSize ?? 100);
+    const maxBytes = Math.max(1, opts.maxBytesPerCommit ?? DEFAULT_MAX_PUSH_BYTES);
     const { dir } = this.cfg;
     const matrix = await git.statusMatrix({ fs: this.fs, dir });
     const changed = matrix.filter((row) => row[1] !== row[2]); // HEAD !== WORKDIR
@@ -116,16 +123,39 @@ export class GitBackup {
       }
     };
 
-    for (let i = 0; i < changed.length; i += chunkSize) {
-      for (const row of changed.slice(i, i + chunkSize)) {
+    let batch: typeof changed = [];
+    let batchBytes = 0;
+    const flush = async (): Promise<void> => {
+      if (batch.length === 0) return;
+      for (const row of batch) {
         const filepath = row[0];
         if (row[2] === 0) await git.remove({ fs: this.fs, dir, filepath });
         else await git.add({ fs: this.fs, dir, filepath });
       }
       await git.commit({ fs: this.fs, dir, message, author: this.author() });
       commits++;
+      batch = [];
+      batchBytes = 0;
       await tryPush();
+    };
+
+    for (const row of changed) {
+      let size = 0;
+      if (row[2] !== 0) {
+        try {
+          size = this.fs.statSync(path.join(dir, row[0])).size;
+        } catch {
+          size = 0; // deleted/unreadable → treat as weightless
+        }
+      }
+      // Cut the current (non-empty) batch before it would exceed either cap.
+      if (batch.length > 0 && (batch.length >= maxFiles || batchBytes + size > maxBytes)) {
+        await flush();
+      }
+      batch.push(row);
+      batchBytes += size;
     }
+    await flush();
     return { commits, pushed, pushError };
   }
 

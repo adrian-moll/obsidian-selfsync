@@ -238,7 +238,7 @@ export default class SelfSyncPlugin extends Plugin {
 
   private logPushError(m: string, reason: string): void {
     if (isTransientNetworkError(m) || /timed?\s*out/i.test(m)) {
-      this.store.log("Git: push deferred (timeout/offline) — will retry");
+      this.store.log("Git: push deferred — will retry (" + m + ")");
     } else {
       this.store.log("Git push error: " + m);
       if (reason === "manual") new Notice("SelfSync Git push error: " + m);

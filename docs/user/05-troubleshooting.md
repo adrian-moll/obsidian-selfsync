@@ -51,13 +51,22 @@ application passwords) and use that instead.
 
 ## Git backup: "push deferred (timeout/offline) — will retry"
 
-A push didn't complete in time (common on the **first, large** backup, or through a
-strict reverse-proxy timeout). SelfSync commits and pushes in batches and retries
-the pending push on later syncs, so it usually lands on its own. If pushes keep
-timing out:
+SelfSync commits and pushes in batches bounded by size, so a large first backup
+goes up in digestible pieces and pending pushes are retried on later syncs — it
+usually lands on its own. The message shows the underlying error in parentheses.
+If pushes keep failing:
 
+- **First-time / very large backup that won't go through the plugin:** seed it once
+  from a terminal — `cd <vault> && git push origin main` — then the plugin only
+  sends small incremental pushes afterward. (`isomorphic-git`, which the plugin
+  uses, is weak on very large single pushes.)
 - Lower the batch size in **Settings → SelfSync → Git backup**.
 - Raise the request timeout on your Git server / reverse proxy, or push over SSH.
+
+Note: the plugin authenticates with the **username + token** in its Git backup
+settings — it does **not** use your system git credential cache. If pushes fail
+with an auth error, check those fields (use a Gitea/GitHub **access token**, not
+your password).
 
 (Git backup is desktop-only; it won't run on mobile.)
 

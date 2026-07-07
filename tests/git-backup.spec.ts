@@ -62,6 +62,13 @@ describe("GitBackup", () => {
     expect(res2.commits).toBe(0); // nothing left to commit
   });
 
+  it("splits commits by byte size so each push stays small", async () => {
+    for (let i = 0; i < 3; i++) writeFileSync(join(dir, `big-${i}.bin`), "x".repeat(1000));
+    // 1000+1000 fits in 2500; the third file spills into a second commit.
+    const res = await backup.backup("bytes", { chunkSize: 100, maxBytesPerCommit: 2500, push: false });
+    expect(res.commits).toBe(2);
+  });
+
   it("honors .gitignore for the plugin's own data folder", async () => {
     mkdirSync(join(dir, ".obsidian", "plugins", "selfsync"), { recursive: true });
     writeFileSync(join(dir, ".obsidian", "plugins", "selfsync", "data.json"), "device-specific");
