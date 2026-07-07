@@ -1,8 +1,8 @@
 /**
  * StorageBackend — a thin, dumb blob store. All sync intelligence (diff,
  * conflicts, tombstones, E2EE) lives in the engine ABOVE this interface, so
- * every backend (WebDAV, CouchDB, future S3) behaves identically
- * (docs/06-backends.md).
+ * every backend (WebDAV today, future S3, etc.) behaves identically
+ * (docs/developer/backends.md).
  */
 
 export interface RemoteEntry {
@@ -13,7 +13,7 @@ export interface RemoteEntry {
 }
 
 export interface BackendCapabilities {
-  /** Whether the backend honors conditional writes (If-Match / _rev). */
+  /** Whether the backend honors conditional writes (e.g. WebDAV If-Match). */
   conditionalWrites: boolean;
 }
 

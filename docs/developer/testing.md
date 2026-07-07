@@ -1,4 +1,4 @@
-# 12 — Testing strategy
+# Testing strategy
 
 Goal: automate everything that *can* be automated with confidence, and be honest
 about what must stay manual (D11 / FR15). The plan is a **test pyramid backed by
@@ -33,7 +33,7 @@ without Obsidian.
 Pure logic, run with **Vitest**:
 
 - **Reconciliation rules** — feed synthetic `(local, base, remote)` triples and
-  assert the produced op list for every row of the rule table (`05-sync-engine.md`).
+  assert the produced op list for every row of the rule table (`sync-engine.md`).
 - **Manifest merge & optimistic-concurrency** logic.
 - **Rename detection** (hash-match → move vs delete+create fallback).
 - **Journal** — replay of an incomplete journal produces a clean converged state.
@@ -44,16 +44,18 @@ Pure logic, run with **Vitest**:
 
 One shared **`StorageBackend` conformance suite** (list/read/write/remove,
 conditional-write semantics, large blobs) run against each real backend spun up
-via **Testcontainers**:
+via a container or live endpoint:
 
-- **CouchDB** — official `couchdb` image; verifies `_rev`-based conditional writes.
-- **WebDAV** — a WebDAV server container (e.g. `rclone serve webdav` or a
-  sabre-dav image); verifies generic WebDAV semantics.
+- **WebDAV (self-hosted Apache `mod_dav`)** — the shipped `docker/webdav` image;
+  verifies strong `If-Match` conditional writes and the weak-ETag handling
+  (`tests/webdav-apache.spec.ts`, gated on `SELFSYNC_APACHEDAV_*`, `settleMs`).
+- **WebDAV (hosted kDrive)** — live endpoint gated on `SELFSYNC_WEBDAV_*`
+  (`tests/webdav-backend.spec.ts`); verifies the real provider's ETag quirks.
 - **Gitea** — `gitea/gitea` container as a push target for the Git-backup layer
-  (`08-git-backup.md`): commit → push → clone-and-verify.
+  (`git-backup.md`): commit → push → clone-and-verify.
 
 **Caveat (honest):** Infomaniak kDrive's specific ETag / `If-Match` behavior
-(spike **S2** in `09-roadmap.md`) cannot be reproduced in a container. Generic
+(spike **S2** in `roadmap.md`) cannot be reproduced in a container. Generic
 WebDAV conformance is automated; the kDrive-specific concurrency check is part of
 **L4 manual**.
 
@@ -91,7 +93,7 @@ Documented checklist, run on real hardware:
 ## Continuous integration
 
 - **GitHub Actions** runs **L1–L3** on every push/PR (the runner supports
-  Testcontainers/Docker). A green pipeline gates releases (`11-deployment.md`).
+  Testcontainers/Docker). A green pipeline gates releases (`releasing.md`).
 - **L4** is a manual checklist executed before tagging significant releases.
 
 ## Coverage summary
@@ -99,7 +101,7 @@ Documented checklist, run on real hardware:
 | Layer | Automated? | Where |
 |-------|-----------|-------|
 | Engine logic, crypto | ✅ | L1 (CI) |
-| Backend semantics (CouchDB, WebDAV, Gitea) | ✅ | L2 (CI, containers) |
+| Backend semantics (WebDAV, Gitea) | ✅ | L2 (CI, containers) |
 | Multi-device convergence, crash safety, E2EE | ✅ | L3 (CI, containers) |
 | Obsidian UI behavior | ❌ manual | L4 |
 | Mobile lifecycle, real kDrive quirks | ❌ manual | L4 |

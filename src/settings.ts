@@ -2,8 +2,6 @@
 import { type App, Platform, PluginSettingTab, Setting } from "obsidian";
 import type SelfSyncPlugin from "./main.js";
 
-export type BackendType = "webdav" | "couchdb";
-
 export interface GitSettings {
   enabled: boolean;
   remoteUrl: string;
@@ -18,9 +16,7 @@ export interface GitSettings {
 }
 
 export interface SelfSyncSettings {
-  backendType: BackendType;
   webdav: { url: string; username: string; password: string; rootDir: string };
-  couchdb: { url: string; username: string; password: string; database: string };
   encryptionEnabled: boolean;
   /** Sync the .obsidian config folder (default off — it churns across devices). */
   syncObsidianConfig: boolean;
@@ -35,9 +31,7 @@ export interface SelfSyncSettings {
 }
 
 export const DEFAULT_SETTINGS: SelfSyncSettings = {
-  backendType: "webdav",
   webdav: { url: "", username: "", password: "", rootDir: "selfsync" },
-  couchdb: { url: "", username: "", password: "", database: "obsidian" },
   encryptionEnabled: false,
   syncObsidianConfig: false,
   syncOnStartup: true,
@@ -76,92 +70,45 @@ export class SelfSyncSettingTab extends PluginSettingTab {
       text: "Early development (M0). Configuration below is a skeleton; syncing is not functional yet.",
     });
 
-    new Setting(containerEl)
-      .setName("Backend")
-      .setDesc("Where your vault is synced. WebDAV (e.g. Infomaniak kDrive) or a self-hosted CouchDB.")
-      .addDropdown((d) =>
-        d
-          .addOption("webdav", "WebDAV")
-          .addOption("couchdb", "CouchDB (self-hosted)")
-          .setValue(this.plugin.settings.backendType)
-          .onChange(async (value) => {
-            this.plugin.settings.backendType = value as BackendType;
-            await this.plugin.saveSettings();
-            this.display();
-          }),
-      );
+    new Setting(containerEl).setName("WebDAV").setHeading();
 
-    if (this.plugin.settings.backendType === "webdav") {
-      new Setting(containerEl)
-        .setName("WebDAV URL")
-        .addText((t) =>
-          t
-            .setPlaceholder("https://…/dav/")
-            .setValue(this.plugin.settings.webdav.url)
-            .onChange(async (v) => {
-              this.plugin.settings.webdav.url = v.trim();
-              await this.plugin.saveSettings();
-            }),
-        );
-      new Setting(containerEl).setName("WebDAV username").addText((t) =>
-        t.setValue(this.plugin.settings.webdav.username).onChange(async (v) => {
-          this.plugin.settings.webdav.username = v.trim();
-          await this.plugin.saveSettings();
-        }),
-      );
-      new Setting(containerEl)
-        .setName("WebDAV password")
-        .setDesc("For kDrive, use an app-specific password (not your login password).")
-        .addText((t) => {
-          t.inputEl.type = "password";
-          t.setValue(this.plugin.settings.webdav.password).onChange(async (v) => {
-            this.plugin.settings.webdav.password = v;
-            await this.plugin.saveSettings();
-          });
-        });
-      new Setting(containerEl)
-        .setName("Sync folder")
-        .setDesc("Folder on the WebDAV server that holds the synced data.")
-        .addText((t) =>
-          t.setValue(this.plugin.settings.webdav.rootDir).onChange(async (v) => {
-            this.plugin.settings.webdav.rootDir = v.trim() || "selfsync";
+    new Setting(containerEl)
+      .setName("WebDAV URL")
+      .setDesc("A WebDAV server you control — self-hosted (e.g. Apache mod_dav; see the user guide) or a hosted provider like Infomaniak kDrive.")
+      .addText((t) =>
+        t
+          .setPlaceholder("https://…/dav/")
+          .setValue(this.plugin.settings.webdav.url)
+          .onChange(async (v) => {
+            this.plugin.settings.webdav.url = v.trim();
             await this.plugin.saveSettings();
           }),
-        );
-    } else {
-      new Setting(containerEl)
-        .setName("CouchDB URL")
-        .addText((t) =>
-          t
-            .setPlaceholder("https://…:6984")
-            .setValue(this.plugin.settings.couchdb.url)
-            .onChange(async (v) => {
-              this.plugin.settings.couchdb.url = v.trim();
-              await this.plugin.saveSettings();
-            }),
-        );
-      new Setting(containerEl).setName("CouchDB username").addText((t) =>
-        t.setValue(this.plugin.settings.couchdb.username).onChange(async (v) => {
-          this.plugin.settings.couchdb.username = v.trim();
-          await this.plugin.saveSettings();
-        }),
       );
-      new Setting(containerEl)
-        .setName("CouchDB password")
-        .addText((t) => {
-          t.inputEl.type = "password";
-          t.setValue(this.plugin.settings.couchdb.password).onChange(async (v) => {
-            this.plugin.settings.couchdb.password = v;
-            await this.plugin.saveSettings();
-          });
+    new Setting(containerEl).setName("WebDAV username").addText((t) =>
+      t.setValue(this.plugin.settings.webdav.username).onChange(async (v) => {
+        this.plugin.settings.webdav.username = v.trim();
+        await this.plugin.saveSettings();
+      }),
+    );
+    new Setting(containerEl)
+      .setName("WebDAV password")
+      .setDesc("For kDrive, use an app-specific password (not your login password).")
+      .addText((t) => {
+        t.inputEl.type = "password";
+        t.setValue(this.plugin.settings.webdav.password).onChange(async (v) => {
+          this.plugin.settings.webdav.password = v;
+          await this.plugin.saveSettings();
         });
-      new Setting(containerEl).setName("CouchDB database").addText((t) =>
-        t.setValue(this.plugin.settings.couchdb.database).onChange(async (v) => {
-          this.plugin.settings.couchdb.database = v.trim();
+      });
+    new Setting(containerEl)
+      .setName("Sync folder")
+      .setDesc("Folder on the WebDAV server that holds the synced data.")
+      .addText((t) =>
+        t.setValue(this.plugin.settings.webdav.rootDir).onChange(async (v) => {
+          this.plugin.settings.webdav.rootDir = v.trim() || "selfsync";
           await this.plugin.saveSettings();
         }),
       );
-    }
 
     new Setting(containerEl)
       .setName("Hide file names (encrypted layout)")

@@ -1,4 +1,4 @@
-# 10 — UI integration
+# UI integration
 
 How the plugin surfaces itself inside Obsidian so the user always knows **when
 sync happens, when it errors, and when conflicts occur** (FR11/FR12) — across
@@ -39,22 +39,21 @@ Sections:
 - **Quiet / optional** for routine "sync complete" (configurable, off by default
   to avoid noise).
 
-## Conflict resolution UX (D9 / FR12)
+## Conflict resolution UX (FR12)
 
-Conflicts are never auto-merged — the engine writes a "keep both" copy
-(`05-sync-engine.md`). The UI makes them easy to find and resolve:
+Text notes are **3-way auto-merged** when concurrent edits touch different regions
+(D3); only genuinely overlapping edits — or non-text files — fall back to a "keep
+both" conflict copy (`sync-engine.md`). The UI makes those remaining conflicts
+easy to find and resolve:
 
 - The Sync view's **Conflicts** section lists each conflict copy: canonical path,
   originating device, and timestamp.
-- Selecting an entry opens a **side-by-side diff** of the two versions (built on
-  Obsidian's bundled CodeMirror), so the user can compare and **merge manually**
-  into the canonical file.
-- Once merged, the user **dismisses** the conflict, which deletes the conflict
-  copy (which then propagates as a normal deletion).
-- No automatic three-way merge — this keeps data safety absolute and avoids a
-  merge-editor's bug surface.
+- Selecting an entry opens a **side-by-side diff** of the two versions, so the user
+  can compare and merge into the canonical file, editing the merged result inline.
+- Saving writes the canonical file and deletes the conflict copy (which then
+  propagates as a normal deletion).
 
-## File-history view (desktop only) — see `08-git-backup.md`
+## File-history view (desktop only) — see `git-backup.md`
 
 The Git-backed history browser is a separate `ItemView`, gated by
 `Platform.isDesktopApp`. Summarized here for UI completeness:
@@ -74,7 +73,7 @@ The Git-backed history browser is a separate `ItemView`, gated by
 
 ## Settings tab
 
-- **Backend** — choose WebDAV or CouchDB; endpoint/credentials; test connection.
+- **Backend** — WebDAV endpoint / credentials / sync folder.
 - **Encryption** — per-backend E2EE toggle; passphrase entry; verifier status.
 - **Triggers** — startup on/off, interval length, debounce delay,
   quit/background flush on/off.

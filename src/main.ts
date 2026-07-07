@@ -24,7 +24,6 @@ import { SyncScheduler } from "./engine/scheduler.js";
 import { MirrorNaming, OpaqueNaming } from "./engine/naming.js";
 import { DEFAULT_EXCLUDES, OBSIDIAN_CONFIG_GLOB, OBSIDIAN_VOLATILE, makeExcluder } from "./engine/exclude.js";
 import { WebDavBackend } from "./backend/webdav-backend.js";
-import { CouchDbBackend } from "./backend/couchdb-backend.js";
 import { obsidianHttp } from "./backend/obsidian-http.js";
 import type { StorageBackend } from "./backend/storage-backend.js";
 import type { Op, StateEntry } from "./types.js";
@@ -335,34 +334,19 @@ export default class SelfSyncPlugin extends Plugin {
   }
 
   private backendLabel(): string {
-    const s = this.settings;
-    if (s.backendType === "webdav") return s.webdav.url ? "WebDAV" : "WebDAV (not configured)";
-    return s.couchdb.url ? "CouchDB" : "CouchDB (not configured)";
+    return this.settings.webdav.url ? "WebDAV" : "WebDAV (not configured)";
   }
 
   private buildBackend(): StorageBackend | null {
     const s = this.settings;
-    if (s.backendType === "webdav") {
-      if (!s.webdav.url) return null;
-      return new WebDavBackend({
-        baseUrl: s.webdav.url,
-        username: s.webdav.username,
-        password: s.webdav.password,
-        rootDir: s.webdav.rootDir || "selfsync",
-        http: obsidianHttp,
-      });
-    }
-    if (s.backendType === "couchdb") {
-      if (!s.couchdb.url) return null;
-      return new CouchDbBackend({
-        baseUrl: s.couchdb.url,
-        username: s.couchdb.username,
-        password: s.couchdb.password,
-        database: s.couchdb.database || "obsidian",
-        http: obsidianHttp,
-      });
-    }
-    return null;
+    if (!s.webdav.url) return null;
+    return new WebDavBackend({
+      baseUrl: s.webdav.url,
+      username: s.webdav.username,
+      password: s.webdav.password,
+      rootDir: s.webdav.rootDir || "selfsync",
+      http: obsidianHttp,
+    });
   }
 
   /** One sync cycle, invoked only via the scheduler (single-flight). */
@@ -488,7 +472,6 @@ export default class SelfSyncPlugin extends Plugin {
       ...DEFAULT_SETTINGS,
       ...r,
       webdav: { ...DEFAULT_SETTINGS.webdav, ...(r.webdav ?? {}) },
-      couchdb: { ...DEFAULT_SETTINGS.couchdb, ...(r.couchdb ?? {}) },
       git: { ...DEFAULT_SETTINGS.git, ...(r.git ?? {}) },
     };
   }

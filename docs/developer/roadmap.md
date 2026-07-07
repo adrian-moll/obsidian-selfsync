@@ -1,4 +1,4 @@
-# 09 — Roadmap
+# Roadmap
 
 ## Tech stack
 
@@ -6,8 +6,8 @@
   template.
 - **Sync path (all platforms):** Obsidian `DataAdapter` for vault I/O; **WebCrypto**
   for SHA-256 hashing and AES-256-GCM encryption.
-- **Backends:** a small WebDAV client (via Obsidian `requestUrl`) and a CouchDB
-  HTTP client.
+- **Backend:** a small WebDAV client (via Obsidian `requestUrl`), targeting a
+  hosted provider (kDrive) or a self-hosted Apache `mod_dav` server.
 - **Git layer (desktop only):** `isomorphic-git`.
 - **Distribution:** manual install / **BRAT** initially (personal use); community
   plugin submission optional later.
@@ -58,16 +58,26 @@
     required for correctness.
   - **Deferred:** resumable/chunked transfers for very large binaries; the **L4**
     real-device acceptance pass on iPad + Android against kDrive (manual).
-- **M3 — E2EE.** Configurable per-backend encryption, path encryption, key
-  verifier (with L1/L3 coverage).
-- **M4 — CouchDB backend. ✅ DONE.** `CouchDbBackend` (blob store: one JSON doc
-  `{data: base64}` per key, `_rev` as the optimistic-concurrency etag, one DB per
-  vault; nested keys via `encodeURIComponent`). Wired as a selectable backend in
-  settings (URL/user/password/database). Ships `docker/docker-compose.yml`
-  (CouchDB + optional Gitea). Validated with the shared `StorageBackend` contract
-  against a **real CouchDB 3 container** (write/read/list/conditional-write/
-  remove/move + etag round-trip) — gated on `SELFSYNC_COUCHDB_*` env, skipped in
-  CI. 73 tests (67 + 6 live-couch).
+- **M3 — E2EE. ✗ NOT STARTED.** The `encryptionEnabled` setting and the opaque
+  `BlobNaming` path exist, but no actual encryption is wired yet — enabling it
+  today would obscure key names without protecting content. This is the main
+  remaining feature. (See `encryption.md` for the intended scheme.)
+- **M4 — CouchDB backend. ⌫ REMOVED.** A `CouchDbBackend` was built and validated
+  (blob store: one base64 JSON doc per key, `_rev` as the etag) but **removed** once
+  M4b landed: as a dumb blob store it only added a second code path, ~33% base64
+  inflation, and an ~8 MB `max_document_size` cap that broke large attachments (a
+  real 413). Self-hosted WebDAV supersedes it with none of those costs.
+- **M4b — Self-hosted WebDAV (Apache `mod_dav`). ✅ DONE.** Rather than maintain a
+  separate self-host backend, the single `WebDavBackend` serves both hosted kDrive
+  **and** a one-container **Apache `mod_dav`** server — the recommended BYO backend
+  for users without a kDrive subscription. Investigation ruled out Caddy-webdav
+  (needs a custom build; `golang.org/x/net/webdav` ignores `If-Match` on PUT).
+  Apache is the reference impl with strong conditional requests; its only quirk — a
+  **weak ETag for ~1s after a write** — is handled by stripping the `W/` prefix
+  (`normalizeEtag`), transparent for kDrive. Ships `docker/webdav/` (httpd +
+  mod_dav, env-configured auth) as the default `docker-compose` service; Gitea is
+  behind an opt-in profile. Gated contract test `tests/webdav-apache.spec.ts`
+  (`SELFSYNC_APACHEDAV_*`, `settleMs: 1100`) — 6/6 against a real container.
 - **M5 — Git backup. ✅ DONE.** Desktop-only (`Platform.isDesktopApp`) versioning
   via `isomorphic-git` on Node `fs`, dynamically imported so mobile never loads it
   (verified: `require("fs")` sits in a lazy `__esm` closure). `GitBackup`:
@@ -92,13 +102,13 @@
   - **Remaining:** first-run setup wizard; user setup guide/docs; the **L4**
     manual acceptance checklist.
 
-See `10-ui-integration.md`, `11-deployment.md`, and `12-testing.md` for the detail
+See `ui.md`, `releasing.md`, and `testing.md` for the detail
 behind the UI, release, and testing items woven through these milestones.
 
 ## Verification
 
 - **Two-device simulation:** two vaults + two plugin instances against one
-  backend; assert convergence for every reconciliation rule in `05-sync-engine.md`.
+  backend; assert convergence for every reconciliation rule in `sync-engine.md`.
 - **Conflict test (UC3):** offline-edit the same file on both → exactly one
   conflict copy, both contents intact.
 - **Delete/rename propagation (UC4/UC5):** tombstones honored, no resurrection;
@@ -124,6 +134,6 @@ behind the UI, release, and testing items woven through these milestones.
   (via `PROPFIND`, XML-entity-encoded → must decode) and honors `If-Match` /
   `If-None-Match: *`. Caveat: `PUT` returns no ETag header, so a follow-up
   `PROPFIND` is needed after each write. ⇒ `conditionalWrites = true`; no
-  lock-object fallback required for kDrive. See `06-backends.md`.
+  lock-object fallback required for kDrive. See `backends.md`.
 - **S3 — State DB storage on mobile.** Choose IndexedDB vs plugin-data JSON for the
   local snapshot, based on size/perf on large vaults.

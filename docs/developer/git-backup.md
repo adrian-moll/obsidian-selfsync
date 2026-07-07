@@ -1,4 +1,4 @@
-# 08 — Git backup (desktop only)
+# Git backup (desktop only)
 
 An **optional, desktop-only** feature that auto-versions the vault to a Git
 remote. It is a **backup/versioning** layer, completely independent of the sync

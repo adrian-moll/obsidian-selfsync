@@ -1,16 +1,21 @@
-# 04 — Technical decisions (ADR-style)
+# Technical decisions (ADR-style)
 
 Decisions locked with the user during specification. Each entry: the choice, the
 context, and the rationale.
 
-## D1 — Self-hostable backend: CouchDB
+## D1 — Self-hostable backend: self-hosted WebDAV (Apache mod_dav)
 
-**Choice:** The self-hostable alternative to WebDAV is **CouchDB**, run as a
-single Docker container.
+**Choice:** Users without a hosted WebDAV provider self-host **Apache `mod_dav`**
+in a single Docker container. There is no separate backend *type* — the same
+`WebDavBackend` drives both hosted (kDrive) and self-hosted servers.
 
-**Rationale:** One container, reliable HTTP semantics, and good behavior over
-mobile networks. It is a proven target for Obsidian sync (Self-hosted LiveSync
-uses it). We use it as a **blob store** (see D4), not for its native replication.
+**Rationale:** `mod_dav` is the reference WebDAV implementation and the one common
+self-hostable server with the strong `If-Match` conditional-request support the
+manifest commit relies on. Reusing the WebDAV backend means one code path, one test
+surface, browsable files on the server, and no per-file size cap. *(An earlier plan
+used CouchDB as the self-host backend; it was dropped — as a base64 blob store it
+added a second code path, ~33% inflation, and an ~8 MB per-document limit that broke
+large attachments, with no compensating benefit. See M4/M4b in `roadmap.md`.)*
 
 ## D2 — Encryption: configurable per backend (E2EE optional, default OFF)
 
@@ -21,7 +26,7 @@ uses it). We use it as a **blob store** (see D4), not for its native replication
 the user controls regardless of encryption. The user prefers the WebDAV folder to
 be human-browsable by default (see D12), and opts into E2EE when they want the
 host to see only ciphertext. Optional E2EE still serves less-trusted backends.
-See `07-encryption.md`.
+See `encryption.md`.
 
 ## D12 — Remote layout: mirror when unencrypted, opaque when encrypted
 
@@ -34,7 +39,7 @@ See `07-encryption.md`.
 **Rationale:** Browsable-on-host and encrypted-at-rest are mutually exclusive — the
 host cannot hide names it must store. A `BlobNaming` strategy selects the layout
 from the encryption setting; the manifest remains the source of truth for
-tombstones/versions/ETags in both modes. See `06-backends.md`.
+tombstones/versions/ETags in both modes. See `backends.md`.
 
 ## D3 — Conflict resolution: auto-merge text, else keep both
 
@@ -47,7 +52,7 @@ was the original decision.)*
 Auto-merge removes the friction of conflict copies for the common case (editing
 different parts of a note on two devices), which was painful in real multi-device
 use. Merging needs the common ancestor, so the last-synced content of text files
-is kept device-locally in a `BaseStore` (see `05-sync-engine.md`). Overlaps still
+is kept device-locally in a `BaseStore` (see `sync-engine.md`). Overlaps still
 keep both, so nothing is silently resolved incorrectly.
 
 ## D4 — Architecture: one unified engine over a thin backend abstraction
@@ -55,12 +60,11 @@ keep both, so nothing is silently resolved incorrectly.
 **Choice:** A single sync engine runs over a **dumb blob-store** interface;
 backends implement only list/read/write/remove.
 
-**Rationale:** Because E2EE (D2) makes content opaque, the backend can't merge it —
-so CouchDB's document-level conflict resolution provides little value. With
-"keep both" (D3) wanted **everywhere**, a single engine gives consistent behavior
-across backends and makes E2EE trivial to implement once. CouchDB still earns its
-place as a robust, self-hostable, mobile-friendly blob target — we just don't
-depend on its merge semantics.
+**Rationale:** Because E2EE (D2) makes content opaque, a backend could never merge
+it — so backend-native conflict resolution provides no value here. With "keep both"
+(D3) wanted **everywhere**, a single engine gives consistent behavior across any
+backend and makes E2EE trivial to implement once. Backends stay dumb blob stores;
+adding one (e.g. S3) is a matter of implementing one small interface.
 
 ## D5 — Sync triggers: startup + background/close + interval + debounced-on-change
 
@@ -88,7 +92,7 @@ transport, built on **isomorphic-git**.
 **Rationale:** Mobile Obsidian cannot run git or shell commands. Git backup is a
 **versioning/backup** concern, not part of the sync path, so it is cleanly
 separated and gated by `Platform.isDesktopApp`. `isomorphic-git` is pure JS and
-bundled, so the user does not need a system git binary. See `08-git-backup.md`.
+bundled, so the user does not need a system git binary. See `git-backup.md`.
 
 ## Verified API constraints that drove the design
 
@@ -105,5 +109,5 @@ bundled, so the user does not need a system git binary. See `08-git-backup.md`.
 
 - **S1** — Which mobile lifecycle events actually fire (tunes D5 accelerators).
 - **S2** — Whether Infomaniak kDrive WebDAV supports usable etags / `If-Match`
-  conditional writes (affects manifest concurrency strategy; see `06-backends.md`).
+  conditional writes (affects manifest concurrency strategy; see `backends.md`).
 - **S3** — Local State DB storage: IndexedDB vs plugin-data JSON on large vaults.

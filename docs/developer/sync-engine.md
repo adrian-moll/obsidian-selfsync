@@ -1,9 +1,9 @@
-# 05 — Sync engine
+# Sync engine
 
 The sync engine is backend-agnostic. It orchestrates change detection,
 reconciliation, crash-safe execution, and manifest updates. It talks to storage
-only through the `StorageBackend` interface (`06-backends.md`) and to crypto only
-through the crypto layer (`07-encryption.md`).
+only through the `StorageBackend` interface (`backends.md`) and to crypto only
+through the crypto layer (`encryption.md`).
 
 ## The three inputs to a sync
 
@@ -69,7 +69,7 @@ their real vault paths (browsable) and the manifest lives under `.selfsync/`. In
 **opaque** mode (encryption on) `blobKey = b-<hash>` and the manifest is at the
 root. The reconciliation rules below are identical in both modes; only the key
 mapping differs. Moves relocate the blob via `StorageBackend.move` when the key
-changes. See `06-backends.md`.
+changes. See `backends.md`.
 
 ## Reconciliation rules
 

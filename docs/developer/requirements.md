@@ -1,13 +1,15 @@
-# 01 — Requirements
+# Requirements
 
 ## Functional requirements
 
 - **FR1 — Full-vault two-way sync.** Sync the entire vault (markdown, attachments,
   arbitrary binaries) between each device and the selected backend, in both
   directions.
-- **FR2 — Pluggable backend.** The user chooses one backend in settings:
-  **WebDAV** (primary, Infomaniak kDrive) or **CouchDB** (self-hosted). Both are
-  driven by the same sync engine.
+- **FR2 — Bring-your-own WebDAV backend.** The vault syncs against a **WebDAV**
+  server the user controls — a hosted provider (e.g. Infomaniak kDrive) or a
+  self-hosted server (Apache `mod_dav`). The backend is a dumb blob store behind
+  the `StorageBackend` interface, so other backends can be added without changing
+  the engine.
 - **FR3 — Full change set propagation.** Reliably propagate creates, edits,
   **deletes**, and **renames/moves** — not just content changes.
 - **FR4 — Conflict handling (keep both).** When the same file is edited on two

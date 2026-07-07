@@ -1,4 +1,4 @@
-# 11 — Deployment & release
+# Deployment & release
 
 Distribution target: **private, via BRAT** — installable and auto-updating on all
 platforms **including mobile**, without going through the official community-store
@@ -27,7 +27,7 @@ An Obsidian plugin is three files placed in
 
 A **GitHub Actions** workflow, triggered on a version tag:
 
-1. Install deps, run the test suite (L1–L3, see `12-testing.md`).
+1. Install deps, run the test suite (L1–L3, see `testing.md`).
 2. `esbuild` production build → `main.js`.
 3. Create a GitHub Release for the tag and upload the three assets.
 

@@ -1,7 +1,7 @@
-# 06 — Backends
+# Backends
 
 A backend is a **dumb blob store**. All intelligence (diff, conflicts,
-tombstones, encryption) lives in the engine above it (`05-sync-engine.md`).
+tombstones, encryption) lives in the engine above it (`sync-engine.md`).
 
 ## The `StorageBackend` contract
 
@@ -47,7 +47,7 @@ interface StorageBackend {
 The engine stores two kinds of objects through this interface: **content blobs**
 (one per file, or per chunk for large files) and the **manifest** (a single
 well-known key). Conditional writes matter mainly for the manifest, to detect
-concurrent writers (`05-sync-engine.md`).
+concurrent writers (`sync-engine.md`).
 
 ## Remote layout: mirror vs opaque (D12)
 
@@ -66,9 +66,22 @@ mirror mode it is a metadata index beside browsable content; in opaque mode it a
 hides paths. Moves relocate the blob via `StorageBackend.move` whenever the key
 changes (mirror: real rename; opaque: cheap server-side rename).
 
-## WebDAV backend (primary — Infomaniak kDrive)
+## WebDAV backend (primary — hosted kDrive *or* self-hosted Apache)
 
-- Maps blob keys to files under a configured sync-root folder on kDrive.
+The single WebDAV backend serves two deployments from the same code:
+
+- **Hosted:** Infomaniak kDrive (or any WebDAV provider), for users who already
+  have one.
+- **Self-hosted:** Apache `mod_dav` in one Docker container — the recommended
+  bring-your-own-backend for users **without** a kDrive subscription. `mod_dav` is
+  the reference WebDAV implementation and is the one common self-hostable server
+  with the **strong `If-Match` conditional-request** support the manifest commit
+  relies on. Both pass the identical `StorageBackend` contract (see live tests
+  `tests/webdav-backend.spec.ts` @ kDrive and `tests/webdav-apache.spec.ts` @
+  Apache). This is why there's no separate self-host backend — one backend, no
+  extra code, browsable files on the server, and no per-file size cap.
+
+- Maps blob keys to files under a configured sync-root folder on the server.
 - Uses `PROPFIND` for `list`, `GET` for `read`, `PUT` for `write`, `DELETE` for
   `remove`, `MKCOL` to create folders, and `MOVE` (with `Destination`) for `move`.
 - **Nested keys** (mirror layout): keys may contain `/`. The backend URL-encodes
@@ -89,46 +102,36 @@ changes (mirror: real rename; opaque: cheap server-side rename).
     recording it in the manifest (one extra round-trip per write).
   ⇒ `capabilities().conditionalWrites = true` for kDrive WebDAV; the manifest
   optimistic-concurrency path is used directly (no lock-object fallback needed).
+- **Weak ETags (Apache `mod_dav`).** `mod_dav` marks a file's ETag **weak**
+  (`W/"…"`) for ~1s after it changes (its mtime can't prove the bytes won't change
+  again within the same second), and a strong `If-Match` never matches a weak tag
+  → conditional writes would `412` forever. The weak and strong forms carry the
+  same opaque value, so `parseEtag` **strips the `W/` prefix** (`normalizeEtag` in
+  `webdav-backend.ts`); once a file settles (>1s old) its strong ETag matches the
+  stored value. Real manifest commits are naturally spaced further apart than that
+  window, and the engine's bounded 412-retry covers any sub-second collision.
+  Harmless for kDrive, whose ETags are already strong. The gated contract test
+  uses `settleMs: 1100` to model this spacing.
 - **Fallback (other WebDAV servers):** for backends that lack usable ETags/
   `If-Match`, fall back to hash-compare before write + a small **lock object** in
-  the sync root to serialize manifest updates.
+  the sync root to serialize manifest updates. (Not needed for kDrive or Apache.)
 - The probe lives at `scripts/s2-webdav-probe.mjs` and can be re-run against any
   WebDAV endpoint.
 - Runs on **all platforms** (mobile-safe: uses Obsidian's `requestUrl` / fetch,
   no Node).
-- Transport encryption is HTTPS (kDrive). At-rest confidentiality comes from E2EE
-  when enabled (`07-encryption.md`).
+- Transport encryption is HTTPS. kDrive provides it; for self-hosted Apache, put
+  it behind a TLS-terminating reverse proxy (Caddy/Traefik) — mobile Obsidian
+  effectively requires HTTPS. At-rest confidentiality comes from E2EE when enabled
+  (`encryption.md`).
 
-## CouchDB backend (self-hosted alternative)
+### Self-hosted deployment (Apache `mod_dav`)
 
-> **Status: implemented (M4).** `src/backend/couchdb-backend.ts`. `docker/docker-compose.yml`
-> spins up CouchDB (+ optional Gitea). Validated by the shared `StorageBackend`
-> contract against a real CouchDB 3 container.
-
-- Used as a **blob store**, not for native replication (see D4).
-- Each blob is one CouchDB **document `{ data: <base64> }`** (M4 keeps it simple;
-  attachments/chunking for large files is a later optimization). The document
-  `_rev` serves as the `etag` for conditional writes — CouchDB has **first-class
-  conditional writes** (`capabilities().conditionalWrites = true`). Nested
-  (mirror-layout) keys are `encodeURIComponent`-encoded into the doc id.
-- `list` via an `_all_docs` query; `read`/`write`/`remove` via the document API.
-- One database per vault.
-- Runs on **all platforms** over HTTP(S).
-
-### Docker deployment
-
-Ship a documented `docker-compose.yml` in the repo:
-
-- A single `couchdb` service (persistent volume for data).
-- A TLS-terminating reverse proxy (Caddy or Traefik) in front for **encrypted
-  transport** — CouchDB itself should not be exposed as plain HTTP over the
-  internet.
-- HTTP basic auth (optionally a per-device user).
-- Notes on backups of the CouchDB volume, and on setting `single_node=true` for a
-  simple single-instance setup.
-
-The goal is a copy-paste setup that satisfies the "simple setup" requirement
-(NFR6) for self-hosters.
+`docker/webdav/` builds a stock `httpd:2.4` image with `mod_dav` enabled and
+basic-auth credentials generated from `WEBDAV_USER`/`WEBDAV_PASSWORD` at startup;
+`docker/docker-compose.yml` wires it as the default `webdav` service (data on a
+named volume). Bring it up with `docker compose up -d webdav`, then in SelfSync
+set the backend to **WebDAV**, URL `http://<host>:8080`, and those credentials.
+Put a TLS proxy in front for any non-localhost use.
 
 ## Adding future backends
 

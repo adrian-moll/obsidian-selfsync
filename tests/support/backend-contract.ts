@@ -1,8 +1,8 @@
 /**
  * Shared StorageBackend conformance suite. Run against every backend (in-memory
- * always; real WebDAV/CouchDB when credentials/containers are available) so they
- * all behave identically for the engine above them (docs/06-backends.md,
- * docs/12-testing.md).
+ * always; real WebDAV — hosted kDrive or a self-hosted Apache mod_dav container —
+ * when credentials/containers are available) so they all behave identically for
+ * the engine above them (docs/developer/backends.md, docs/developer/testing.md).
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ConditionalWriteError, type StorageBackend } from "../../src/backend/storage-backend.js";
@@ -13,11 +13,20 @@ export interface ContractHarness {
   /** Namespaces a key so runs don't collide on a shared backend. */
   key: (name: string) => string;
   cleanup: () => Promise<void>;
+  /**
+   * Delay (ms) to let a just-written blob "settle" before a conditional
+   * overwrite. Some servers (Apache mod_dav) emit a *weak* ETag for ~1s after a
+   * change, which never satisfies a strong `If-Match`; this models the natural
+   * spacing between real manifest commits. Default 0 (kDrive and in-memory
+   * return strong etags immediately).
+   */
+  settleMs?: number;
 }
 
 export function runBackendContract(name: string, setup: () => Promise<ContractHarness>): void {
   describe(`StorageBackend contract: ${name}`, () => {
     let h: ContractHarness;
+    const settle = () => new Promise<void>((r) => setTimeout(r, h.settleMs ?? 0));
     beforeAll(async () => {
       h = await setup();
     });
@@ -42,6 +51,7 @@ export function runBackendContract(name: string, setup: () => Promise<ContractHa
     it("conditional write: correct etag overwrites, stale etag throws", async () => {
       const k = h.key("cond.txt");
       const etag1 = await h.backend.write(k, utf8.encode("v1"));
+      await settle();
       const etag2 = await h.backend.write(k, utf8.encode("v2"), etag1);
       expect(utf8.decode(await h.backend.read(k))).toBe("v2");
       expect(etag2).not.toBe(etag1);
@@ -64,6 +74,7 @@ export function runBackendContract(name: string, setup: () => Promise<ContractHa
       await h.backend.write(k, utf8.encode("v1"));
       const r = await h.backend.readWithMeta(k);
       expect(r).not.toBeNull();
+      await settle();
       await h.backend.write(k, utf8.encode("v2"), r!.etag); // must NOT throw 412
       expect(utf8.decode(await h.backend.read(k))).toBe("v2");
     });

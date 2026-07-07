@@ -1,7 +1,7 @@
-# 07 — Encryption
+# Encryption
 
 End-to-end encryption is a **per-backend option**, default **OFF** (D2, amended in
-round 3). When enabled, the storage host — kDrive or a CouchDB instance — only ever
+round 3). When enabled, the storage host — your WebDAV server — only ever
 sees ciphertext and opaque keys. All primitives come from **WebCrypto**, which is
 available on both desktop and mobile (NFR4).
 
@@ -36,7 +36,7 @@ encrypt content.
 - Each blob is encrypted with **AES-256-GCM**.
 - A **fresh random IV** per encryption operation, prepended to the ciphertext.
 - GCM's authentication tag guarantees integrity (tampered blobs fail to decrypt).
-- Large files are chunked (`05-sync-engine.md`); each chunk is encrypted
+- Large files are chunked (`sync-engine.md`); each chunk is encrypted
   independently so transfers remain resumable.
 
 ## Path privacy

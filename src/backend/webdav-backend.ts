@@ -45,9 +45,23 @@ function tag(name: string): RegExp {
   return new RegExp(`<(?:[a-z0-9]+:)?${name}[^>]*>([\\s\\S]*?)</(?:[a-z0-9]+:)?${name}>`, "i");
 }
 
+/**
+ * Drop the weak-validator prefix (`W/`). Apache mod_dav marks a file's ETag weak
+ * for one second after it changes (its mtime can't prove the byte content won't
+ * change again within the same second). `If-Match` uses *strong* comparison, so a
+ * weak tag never matches → conditional writes 412 forever. The weak and strong
+ * forms carry the same opaque value, so stripping `W/` lets a stored etag match
+ * the resource's strong etag once it has settled (>1s old); the engine's spacing
+ * between manifest commits (and its bounded 412-retry) covers the sub-second gap.
+ * A no-op for servers that already return strong etags (e.g. kDrive).
+ */
+function normalizeEtag(etag: string): string {
+  return etag.replace(/^\s*[Ww]\//, "");
+}
+
 function parseEtag(xml: string): string | null {
   const m = xml.match(tag("getetag"));
-  return m ? decodeEntities(m[1].trim()) : null;
+  return m ? normalizeEtag(decodeEntities(m[1].trim())) : null;
 }
 
 interface ParsedResponse {
@@ -212,7 +226,8 @@ export class WebDavBackend implements StorageBackend {
       throw new Error(`WebDAV PUT ${key} failed: HTTP ${res.status}`);
     }
     // kDrive does not return an ETag on PUT — fetch it explicitly.
-    return (await this.fetchEtag(key)) ?? res.headers["etag"] ?? "";
+    const putEtag = res.headers["etag"];
+    return (await this.fetchEtag(key)) ?? (putEtag ? normalizeEtag(putEtag) : "");
   }
 
   async remove(key: string, prevEtag?: string): Promise<void> {
