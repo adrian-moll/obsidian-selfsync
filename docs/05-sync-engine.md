@@ -126,6 +126,16 @@ the app). Guarantees:
    quit/visibility hooks only make convergence faster; none are required for
    correctness.
 
+### Chunked manifest commit (large syncs)
+
+Rather than uploading everything and committing the manifest once at the end (where
+a single mid-sync collision would discard the whole batch), the engine commits the
+manifest in **chunks** (~100 ops). Each committed chunk updates the local State DB,
+so a `ConditionalWriteError` (another device committed first) only costs the current
+chunk: the engine reloads the fresh manifest, re-reconciles the **remaining** work
+(already-committed files are now no-ops), and resumes. Progress therefore survives
+concurrent multi-device syncs instead of restarting from zero.
+
 ## Transfer manager
 
 - Transfers only changed blobs (hash-based change detection, NFR3).

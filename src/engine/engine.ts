@@ -118,56 +118,83 @@ export class SyncEngine {
 
   async sync(opts: SyncOptions): Promise<SyncResult> {
     const exclude = opts.exclude ?? (() => false);
-    const { manifest, etag } = await this.manifests.load();
-    const baseAll = await this.deps.state.toMap();
-    const local = await scanVault(this.deps.vault, opts.useMtimeShortcut ? baseAll : undefined, exclude);
+    const local = await scanVault(
+      this.deps.vault,
+      opts.useMtimeShortcut ? await this.deps.state.toMap() : undefined,
+      exclude,
+    );
     const existingConflicts = [...local.keys()].filter(isConflictCopy);
 
-    // Hide excluded paths from reconciliation (from local, base, and remote) so
-    // they are never uploaded/downloaded/deleted. The full manifest is still
-    // committed below, so any pre-existing excluded remote entries are preserved.
-    const base = new Map([...baseAll].filter(([p]) => !exclude(p)));
-    const remoteEntries: Record<string, ManifestEntry> = {};
-    for (const [p, e] of Object.entries(manifest.entries)) if (!exclude(p)) remoteEntries[p] = e;
-    const remoteForReconcile: Manifest = { ...manifest, entries: remoteEntries };
+    // Hide excluded paths from reconciliation; the full manifest is still committed
+    // (so pre-existing excluded remote entries are preserved).
+    const filterRemote = (m: Manifest): Manifest => {
+      const entries: Record<string, ManifestEntry> = {};
+      for (const [p, e] of Object.entries(m.entries)) if (!exclude(p)) entries[p] = e;
+      return { ...m, entries };
+    };
+    const reconcileAgainst = async (m: Manifest): Promise<Op[]> => {
+      const base = new Map([...(await this.deps.state.toMap())].filter(([p]) => !exclude(p)));
+      return reconcile(
+        { local, base, remote: filterRemote(m) },
+        { conflictCopyPath: (p) => conflictCopyPath(p, this.deps.deviceId, opts.timestampIso) },
+      );
+    };
 
-    const ops = reconcile(
-      { local, base, remote: remoteForReconcile },
-      { conflictCopyPath: (p) => conflictCopyPath(p, this.deps.deviceId, opts.timestampIso) },
-    );
+    let { manifest, etag } = await this.manifests.load();
+    let ops = await reconcileAgainst(manifest);
 
     const outcomes: Outcomes = { merged: [], conflictCopies: [] };
-    if (ops.length === 0) {
-      return { ops, committed: false, conflict: false, merged: [], conflictCopies: [], existingConflicts };
-    }
-
-    const working = cloneManifest(manifest);
-    const stateMutations: Array<() => Promise<void>> = [];
-    for (let i = 0; i < ops.length; i++) {
-      await this.applyOp(ops[i], working, stateMutations, outcomes);
-      opts.onProgress?.(i + 1, ops.length);
-    }
-
-    try {
-      await this.manifests.commit(working, etag);
-    } catch (err) {
-      if (err instanceof ConditionalWriteError) {
-        // Lost the race — leave State DB untouched; next cycle reconciles anew.
-        return { ops, committed: false, conflict: true, merged: [], conflictCopies: [], existingConflicts };
-      }
-      throw err;
-    }
-
-    for (const mutate of stateMutations) await mutate();
-    return {
-      ops,
-      committed: true,
-      conflict: false,
+    const appliedOps: Op[] = [];
+    const result = (conflict: boolean): SyncResult => ({
+      ops: appliedOps,
+      committed: appliedOps.length > 0,
+      conflict,
       merged: outcomes.merged,
       conflictCopies: outcomes.conflictCopies,
-      // Include copies created this cycle (the scan predates their creation).
       existingConflicts: [...new Set([...existingConflicts, ...outcomes.conflictCopies])],
-    };
+    });
+
+    if (ops.length === 0) return result(false);
+
+    // Commit the manifest in chunks so progress survives a mid-sync collision:
+    // committed chunks update the State DB, so a conflict only re-does the
+    // uncommitted remainder instead of the whole batch.
+    const CHUNK = 100;
+    const MAX_CONFLICT_RELOADS = 5;
+    let done = 0;
+    let conflictReloads = 0;
+
+    while (ops.length > 0) {
+      const chunk = ops.splice(0, CHUNK);
+      const working = cloneManifest(manifest);
+      const chunkMutations: Array<() => Promise<void>> = [];
+      for (const op of chunk) await this.applyOp(op, working, chunkMutations, outcomes);
+
+      try {
+        etag = await this.manifests.commit(working, etag);
+      } catch (err) {
+        if (err instanceof ConditionalWriteError) {
+          if (++conflictReloads > MAX_CONFLICT_RELOADS) return result(true);
+          // Another device committed first — reload and re-plan the remaining
+          // work against the fresh manifest (already-committed chunks are now in
+          // the State DB, so they reconcile to no-ops).
+          const reloaded = await this.manifests.load();
+          manifest = reloaded.manifest;
+          etag = reloaded.etag;
+          ops = await reconcileAgainst(manifest);
+          continue;
+        }
+        throw err;
+      }
+
+      manifest = working;
+      for (const mutate of chunkMutations) await mutate();
+      appliedOps.push(...chunk);
+      done += chunk.length;
+      opts.onProgress?.(done, done + ops.length);
+    }
+
+    return result(false);
   }
 
   /** Store the agreed content of a text file so future conflicts can 3-way merge. */
