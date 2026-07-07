@@ -71,9 +71,13 @@
   lists an active note's commits with View (modal) + Restore. Settings section
   (desktop only). Headless test against a real temp repo (commit/log/restore/
   gitignore); a live Gitea container test is deferred. 58 tests green.
-- **M6 — Polish.** Setup wizard, Sync-view polish, **conflict list + side-by-side
-  diff**, **BRAT release + GitHub Actions CI** (runs L1–L3), user docs, and the
-  **L4 manual acceptance checklist**.
+- **M6 — Polish. ◑ IN PROGRESS.**
+  - **Done:** live Sync-view; **BRAT release + GitHub Actions CI**; **conflict list
+    + side-by-side resolver** — clicking a conflict copy opens a diff (LCS line
+    diff) of current vs copy with an editable merged result; saving writes the
+    canonical file and deletes the copy, which then syncs. 63 tests green.
+  - **Remaining:** first-run setup wizard; user setup guide/docs; the **L4**
+    manual acceptance checklist.
 
 See `10-ui-integration.md`, `11-deployment.md`, and `12-testing.md` for the detail
 behind the UI, release, and testing items woven through these milestones.

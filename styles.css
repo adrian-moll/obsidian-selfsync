@@ -58,6 +58,35 @@ textarea.selfsync-activity-log {
   gap: 0.5rem;
 }
 
+/* Conflict resolver side-by-side diff */
+.selfsync-resolve .selfsync-diff {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  max-height: 40vh;
+  overflow: auto;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  margin-bottom: 0.5rem;
+}
+
+.selfsync-diff-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+}
+
+.selfsync-diff-row.changed {
+  background: var(--background-modifier-error-hover, rgba(248, 81, 73, 0.15));
+}
+
+.selfsync-diff-cell {
+  padding: 0 0.4rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-right: 1px solid var(--background-modifier-border);
+}
+
+
 .selfsync-empty {
   color: var(--text-faint);
   font-style: italic;

@@ -15,6 +15,7 @@ export class SelfSyncView extends ItemView {
     leaf: WorkspaceLeaf,
     private readonly store: SyncStore,
     private readonly onSyncNow: () => void,
+    private readonly onResolveConflict: (conflictPath: string) => void,
   ) {
     super(leaf);
   }
@@ -68,7 +69,12 @@ export class SelfSyncView extends ItemView {
       conflicts.createDiv({ cls: "selfsync-empty", text: "No conflicts." });
     } else {
       const ul = conflicts.createEl("ul");
-      for (const path of s.conflicts) ul.createEl("li", { text: path });
+      for (const path of s.conflicts) {
+        const li = ul.createEl("li");
+        const row = li.createDiv({ cls: "selfsync-section-head" });
+        row.createSpan({ text: path });
+        row.createEl("button", { text: "Resolve" }).onclick = () => this.onResolveConflict(path);
+      }
     }
 
     const activity = c.createDiv({ cls: "selfsync-section" });

@@ -60,6 +60,11 @@ export function isConflictCopy(path: string): boolean {
   return /\(conflict [^)]*\)/.test(path);
 }
 
+/** Map a conflict-copy path back to its canonical file (inverse of conflictCopyPath). */
+export function canonicalPathOf(conflictCopyPath: string): string {
+  return conflictCopyPath.replace(/ \(conflict [^)]*\)/, "");
+}
+
 interface Outcomes {
   merged: string[];
   conflictCopies: string[];

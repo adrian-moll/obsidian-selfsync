@@ -11,6 +11,8 @@ import { FileSystemAdapter, Notice, Platform, Plugin } from "obsidian";
 import { DEFAULT_SETTINGS, type SelfSyncSettings, SelfSyncSettingTab } from "./settings.js";
 import { SelfSyncView, VIEW_TYPE_SELFSYNC } from "./ui/sync-view.js";
 import { FileHistoryView, VIEW_TYPE_FILE_HISTORY } from "./ui/file-history-view.js";
+import { ConflictResolveModal } from "./ui/conflict-resolve-modal.js";
+import { canonicalPathOf } from "./engine/engine.js";
 import type { GitBackup } from "./git/git-backup.js";
 import { StatusController } from "./ui/status.js";
 import { SyncStore } from "./ui/sync-store.js";
@@ -84,7 +86,13 @@ export default class SelfSyncPlugin extends Plugin {
 
     this.registerView(
       VIEW_TYPE_SELFSYNC,
-      (leaf) => new SelfSyncView(leaf, this.store, () => void this.scheduler.trigger("manual")),
+      (leaf) =>
+        new SelfSyncView(
+          leaf,
+          this.store,
+          () => void this.scheduler.trigger("manual"),
+          (conflictPath) => void this.openResolver(conflictPath),
+        ),
     );
 
     const ribbonEl = this.addRibbonIcon("refresh-cw", "SelfSync", () => void this.activateView());
@@ -226,6 +234,26 @@ export default class SelfSyncPlugin extends Plugin {
     if (!leaf) return;
     await leaf.setViewState({ type: VIEW_TYPE_FILE_HISTORY, active: true });
     workspace.revealLeaf(leaf);
+  }
+
+  /** Open the side-by-side resolver for a conflict copy (D9/FR12). */
+  private async openResolver(conflictPath: string): Promise<void> {
+    const adapter = this.app.vault.adapter;
+    const canonicalPath = canonicalPathOf(conflictPath);
+    const conflictText = await adapter.read(conflictPath).catch(() => "");
+    const currentText = (await adapter.exists(canonicalPath)) ? await adapter.read(canonicalPath) : "";
+    new ConflictResolveModal(
+      this.app,
+      { canonicalPath, currentText, conflictPath, conflictText },
+      (merged) => {
+        void (async () => {
+          await adapter.write(canonicalPath, merged);
+          await adapter.remove(conflictPath).catch(() => {});
+          new Notice(`SelfSync: resolved ${canonicalPath}`);
+          this.scheduler.requestDebounced("resolve", 500);
+        })();
+      },
+    ).open();
   }
 
   private backendLabel(): string {
