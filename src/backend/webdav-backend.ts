@@ -224,6 +224,41 @@ export class WebDavBackend implements StorageBackend {
     if (res.status !== 404 && (res.status < 200 || res.status >= 300)) {
       throw new Error(`WebDAV DELETE ${key} failed: HTTP ${res.status}`);
     }
+    // Prune now-empty parent folders (best-effort) so the browsable layout stays tidy.
+    await this.pruneEmptyDirs(key).catch(() => {});
+  }
+
+  /** Whether a directory (relative to root) contains no entries. */
+  private async isDirEmpty(relDir: string): Promise<boolean> {
+    const url = this.rootUrl() + this.encodePath(relDir) + "/";
+    const res = await this.opts.http({
+      method: "PROPFIND",
+      url,
+      headers: this.headers({ Depth: "1", "Content-Type": "application/xml" }),
+      body: PROPFIND_BODY,
+    });
+    if (res.status < 200 || res.status >= 300) return false;
+    const reqPath = decodeURIComponent(new URL(url).pathname).replace(/\/+$/, "");
+    for (const r of parseMultistatus(utf8.decode(res.body))) {
+      if (!r.href) continue;
+      const hrefPath = decodeURIComponent(new URL(r.href, this.opts.baseUrl).pathname).replace(/\/+$/, "");
+      if (hrefPath !== reqPath) return false; // has a child
+    }
+    return true;
+  }
+
+  /** Delete empty ancestor folders of `key`, walking up until a non-empty one. */
+  private async pruneEmptyDirs(key: string): Promise<void> {
+    const parts = key.split("/").filter((s) => s.length > 0);
+    parts.pop(); // drop the file name
+    while (parts.length > 0) {
+      const relDir = parts.join("/");
+      if (!(await this.isDirEmpty(relDir))) break;
+      const res = await this.opts.http({ method: "DELETE", url: this.rootUrl() + this.encodePath(relDir) + "/", headers: this.headers() });
+      if (res.status !== 404 && (res.status < 200 || res.status >= 300)) break;
+      this.ensuredDirs.delete(relDir);
+      parts.pop();
+    }
   }
 
   async move(from: string, to: string): Promise<void> {

@@ -41,7 +41,34 @@ export class ObsidianVaultAdapter implements VaultAdapter {
   }
 
   async remove(path: string): Promise<void> {
-    await this.adapter.remove(normalizePath(path));
+    const norm = normalizePath(path);
+    await this.adapter.remove(norm);
+    await this.pruneEmptyParents(norm);
+  }
+
+  /** Remove now-empty ancestor folders after deleting a file (best-effort). */
+  private async pruneEmptyParents(normalizedPath: string): Promise<void> {
+    let dir = this.parentOf(normalizedPath);
+    while (dir) {
+      let listing;
+      try {
+        listing = await this.adapter.list(dir);
+      } catch {
+        return;
+      }
+      if (listing.files.length > 0 || listing.folders.length > 0) return; // not empty
+      try {
+        await this.adapter.rmdir(dir, false);
+      } catch {
+        return;
+      }
+      dir = this.parentOf(dir);
+    }
+  }
+
+  private parentOf(p: string): string | null {
+    const i = p.lastIndexOf("/");
+    return i > 0 ? p.slice(0, i) : null; // null → root-level (nothing to prune)
   }
 
   async rename(from: string, to: string): Promise<void> {
