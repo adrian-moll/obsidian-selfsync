@@ -33,9 +33,11 @@ describe("glob exclusion", () => {
     expect(re.test("a/b.md")).toBe(false);
   });
 
-  it("always-on defaults exclude the plugin's own folder and .trash", () => {
+  it("always-on defaults exclude the plugin's own folder, the git repo, and .trash", () => {
     const ex = makeExcluder(DEFAULT_EXCLUDES);
     expect(ex(".obsidian/plugins/selfsync/data.json")).toBe(true);
+    expect(ex(".git/index")).toBe(true);
+    expect(ex(".git/objects/ab/cdef")).toBe(true);
     expect(ex(".trash/old.md")).toBe(true);
     expect(ex("Notes/todo.md")).toBe(false);
   });

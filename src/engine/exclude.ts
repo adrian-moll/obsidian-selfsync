@@ -10,6 +10,7 @@
 /** Always excluded, regardless of the config-sync setting. */
 export const DEFAULT_EXCLUDES: string[] = [
   ".obsidian/plugins/selfsync/**", // our own plugin + state (device-specific)
+  ".git/**", // the desktop Git-backup repo — device-local, must never sync
   ".trash/**",
 ];
 

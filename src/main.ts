@@ -337,7 +337,20 @@ export default class SelfSyncPlugin extends Plugin {
         naming,
         baseStore: new ObsidianBaseStore(this.app),
       });
-      const res = await engine.sync({ timestampIso: new Date().toISOString(), useMtimeShortcut: true, exclude });
+      let lastProgressAt = 0;
+      const onProgress = (done: number, total: number) => {
+        const now = Date.now();
+        if (done === total || now - lastProgressAt > 200) {
+          lastProgressAt = now;
+          this.store.update({ status: "syncing", detail: `Syncing… ${done}/${total}` });
+        }
+      };
+      const res = await engine.sync({
+        timestampIso: new Date().toISOString(),
+        useMtimeShortcut: true,
+        exclude,
+        onProgress,
+      });
       const nowIso = new Date().toISOString();
 
       if (res.conflict) {

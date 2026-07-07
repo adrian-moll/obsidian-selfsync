@@ -41,6 +41,8 @@ export interface SyncOptions {
   useMtimeShortcut?: boolean;
   /** Paths matching this are never synced (uploaded/downloaded/deleted). */
   exclude?: (path: string) => boolean;
+  /** Called after each op executes, for progress display. */
+  onProgress?: (done: number, total: number) => void;
 }
 
 export interface SyncResult {
@@ -141,8 +143,9 @@ export class SyncEngine {
 
     const working = cloneManifest(manifest);
     const stateMutations: Array<() => Promise<void>> = [];
-    for (const op of ops) {
-      await this.applyOp(op, working, stateMutations, outcomes);
+    for (let i = 0; i < ops.length; i++) {
+      await this.applyOp(ops[i], working, stateMutations, outcomes);
+      opts.onProgress?.(i + 1, ops.length);
     }
 
     try {
