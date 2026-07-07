@@ -1,8 +1,19 @@
 /** Plugin settings model + settings tab. M0 exposes a minimal skeleton. */
-import { type App, PluginSettingTab, Setting } from "obsidian";
+import { type App, Platform, PluginSettingTab, Setting } from "obsidian";
 import type SelfSyncPlugin from "./main.js";
 
 export type BackendType = "webdav" | "couchdb";
+
+export interface GitSettings {
+  enabled: boolean;
+  remoteUrl: string;
+  username: string;
+  token: string;
+  authorName: string;
+  authorEmail: string;
+  commitOnSync: boolean;
+  push: boolean;
+}
 
 export interface SelfSyncSettings {
   backendType: BackendType;
@@ -15,6 +26,8 @@ export interface SelfSyncSettings {
   syncIntervalMinutes: number;
   syncOnFileChange: boolean;
   excludeGlobs: string[];
+  /** Desktop-only Git backup (D7/FR9). */
+  git: GitSettings;
   /** Stable per-device id, generated on first load. */
   deviceId: string;
 }
@@ -29,6 +42,16 @@ export const DEFAULT_SETTINGS: SelfSyncSettings = {
   syncIntervalMinutes: 5,
   syncOnFileChange: true,
   excludeGlobs: [],
+  git: {
+    enabled: false,
+    remoteUrl: "",
+    username: "",
+    token: "",
+    authorName: "",
+    authorEmail: "",
+    commitOnSync: true,
+    push: true,
+  },
   deviceId: "",
 };
 
@@ -182,5 +205,79 @@ export class SelfSyncSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         });
       });
+
+    if (Platform.isDesktopApp) this.renderGitSettings(containerEl);
+  }
+
+  private renderGitSettings(containerEl: HTMLElement): void {
+    const g = this.plugin.settings.git;
+    containerEl.createEl("h3", { text: "Git backup (desktop only)" });
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "Auto-commit your vault to a Git remote for versioning. Independent of sync; never runs on mobile.",
+    });
+
+    new Setting(containerEl).setName("Enable Git backup").addToggle((t) =>
+      t.setValue(g.enabled).onChange(async (v) => {
+        g.enabled = v;
+        await this.plugin.saveSettings();
+        this.display();
+      }),
+    );
+    if (!g.enabled) return;
+
+    new Setting(containerEl)
+      .setName("Remote URL")
+      .setDesc("HTTPS Git remote, e.g. a self-hosted Gitea/GitLab repo.")
+      .addText((t) =>
+        t.setPlaceholder("https://git.example.com/you/vault.git").setValue(g.remoteUrl).onChange(async (v) => {
+          g.remoteUrl = v.trim();
+          await this.plugin.saveSettings();
+        }),
+      );
+    new Setting(containerEl).setName("Username").addText((t) =>
+      t.setValue(g.username).onChange(async (v) => {
+        g.username = v.trim();
+        await this.plugin.saveSettings();
+      }),
+    );
+    new Setting(containerEl)
+      .setName("Token / password")
+      .setDesc("A personal access token is recommended.")
+      .addText((t) => {
+        t.inputEl.type = "password";
+        t.setValue(g.token).onChange(async (v) => {
+          g.token = v;
+          await this.plugin.saveSettings();
+        });
+      });
+    new Setting(containerEl).setName("Commit author name").addText((t) =>
+      t.setValue(g.authorName).onChange(async (v) => {
+        g.authorName = v;
+        await this.plugin.saveSettings();
+      }),
+    );
+    new Setting(containerEl).setName("Commit author email").addText((t) =>
+      t.setValue(g.authorEmail).onChange(async (v) => {
+        g.authorEmail = v.trim();
+        await this.plugin.saveSettings();
+      }),
+    );
+    new Setting(containerEl)
+      .setName("Commit after each sync")
+      .addToggle((t) =>
+        t.setValue(g.commitOnSync).onChange(async (v) => {
+          g.commitOnSync = v;
+          await this.plugin.saveSettings();
+        }),
+      );
+    new Setting(containerEl)
+      .setName("Push after commit")
+      .addToggle((t) =>
+        t.setValue(g.push).onChange(async (v) => {
+          g.push = v;
+          await this.plugin.saveSettings();
+        }),
+      );
   }
 }

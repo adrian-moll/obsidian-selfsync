@@ -7,9 +7,11 @@
  * single-flight SyncScheduler so they never overlap. Live status flows through a
  * SyncStore into the ribbon/status bar and the Sync view.
  */
-import { Notice, Platform, Plugin } from "obsidian";
+import { FileSystemAdapter, Notice, Platform, Plugin } from "obsidian";
 import { DEFAULT_SETTINGS, type SelfSyncSettings, SelfSyncSettingTab } from "./settings.js";
 import { SelfSyncView, VIEW_TYPE_SELFSYNC } from "./ui/sync-view.js";
+import { FileHistoryView, VIEW_TYPE_FILE_HISTORY } from "./ui/file-history-view.js";
+import type { GitBackup } from "./git/git-backup.js";
 import { StatusController } from "./ui/status.js";
 import { SyncStore } from "./ui/sync-store.js";
 import { ObsidianVaultAdapter } from "./vault/obsidian-vault-adapter.js";
@@ -70,6 +72,7 @@ export default class SelfSyncPlugin extends Plugin {
   private status?: StatusController;
   private scheduler!: SyncScheduler;
   private conflictRetries = 0;
+  private gitBusy = false;
 
   async onload(): Promise<void> {
     await this.loadPersisted();
@@ -93,6 +96,25 @@ export default class SelfSyncPlugin extends Plugin {
     this.addCommand({ id: "sync-now", name: "Sync now", callback: () => void this.scheduler.trigger("manual") });
 
     this.addSettingTab(new SelfSyncSettingTab(this.app, this));
+
+    // Git backup is desktop-only (D7). Register its view + commands only there.
+    if (Platform.isDesktopApp) {
+      this.registerView(
+        VIEW_TYPE_FILE_HISTORY,
+        (leaf) =>
+          new FileHistoryView(
+            leaf,
+            () => this.getGitBackup(),
+            () => this.app.workspace.getActiveFile()?.path ?? null,
+          ),
+      );
+      this.addCommand({ id: "git-commit-now", name: "Git backup: commit now", callback: () => void this.runGitBackup("manual") });
+      this.addCommand({
+        id: "show-file-history",
+        name: "Show file history (Git)",
+        callback: () => void this.activateFileHistory(),
+      });
+    }
 
     // Set up triggers once the workspace is ready (avoids the initial file-load
     // event burst and premature syncing).
@@ -141,6 +163,68 @@ export default class SelfSyncPlugin extends Plugin {
     const leaf = workspace.getRightLeaf(false);
     if (!leaf) return;
     await leaf.setViewState({ type: VIEW_TYPE_SELFSYNC, active: true });
+    workspace.revealLeaf(leaf);
+  }
+
+  // --- Git backup (desktop only) ---------------------------------------------
+
+  /** Construct a ready GitBackup, or null if unavailable (mobile/disabled/no fs). */
+  private async getGitBackup(): Promise<GitBackup | null> {
+    if (!Platform.isDesktopApp || !this.settings.git.enabled) return null;
+    const adapter = this.app.vault.adapter;
+    if (!(adapter instanceof FileSystemAdapter)) return null;
+    const { GitBackup } = await import("./git/git-backup.js"); // lazy: never loaded on mobile
+    const g = this.settings.git;
+    const backup = new GitBackup({
+      dir: adapter.getBasePath(),
+      remoteUrl: g.remoteUrl || undefined,
+      username: g.username || undefined,
+      token: g.token || undefined,
+      authorName: g.authorName || undefined,
+      authorEmail: g.authorEmail || undefined,
+    });
+    await backup.init();
+    return backup;
+  }
+
+  private async runGitBackup(reason: string): Promise<void> {
+    if (this.gitBusy) return;
+    const backup = await this.getGitBackup();
+    if (!backup) {
+      if (reason === "manual") new Notice("SelfSync: enable Git backup in settings (desktop only).");
+      return;
+    }
+    this.gitBusy = true;
+    try {
+      const res = await backup.commitAll(`SelfSync backup (${reason})`);
+      if (res.committed) {
+        this.store.log(`Git: committed ${res.oid?.slice(0, 7)}`);
+        if (this.settings.git.push && this.settings.git.remoteUrl) {
+          await backup.push();
+          this.store.log("Git: pushed");
+        }
+      } else if (reason === "manual") {
+        this.store.log("Git: nothing to commit");
+      }
+    } catch (e) {
+      const m = e instanceof Error ? e.message : String(e);
+      this.store.log("Git error: " + m);
+      if (reason === "manual") new Notice("SelfSync Git error: " + m);
+    } finally {
+      this.gitBusy = false;
+    }
+  }
+
+  private async activateFileHistory(): Promise<void> {
+    const { workspace } = this.app;
+    const existing = workspace.getLeavesOfType(VIEW_TYPE_FILE_HISTORY)[0];
+    if (existing) {
+      workspace.revealLeaf(existing);
+      return;
+    }
+    const leaf = workspace.getRightLeaf(false);
+    if (!leaf) return;
+    await leaf.setViewState({ type: VIEW_TYPE_FILE_HISTORY, active: true });
     workspace.revealLeaf(leaf);
   }
 
@@ -234,6 +318,9 @@ export default class SelfSyncPlugin extends Plugin {
       if (res.conflictCopies.length) {
         new Notice(`SelfSync: ${res.conflictCopies.length} conflict copy(ies) — overlapping edits, see the Sync panel.`);
       }
+
+      // Desktop-only Git backup after the vault has converged (no-op on mobile).
+      if (this.settings.git.commitOnSync) void this.runGitBackup("after sync");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       this.store.update({ status: "error", detail: "Error", lastError: msg });
@@ -249,6 +336,7 @@ export default class SelfSyncPlugin extends Plugin {
       ...r,
       webdav: { ...DEFAULT_SETTINGS.webdav, ...(r.webdav ?? {}) },
       couchdb: { ...DEFAULT_SETTINGS.couchdb, ...(r.couchdb ?? {}) },
+      git: { ...DEFAULT_SETTINGS.git, ...(r.git ?? {}) },
     };
   }
 

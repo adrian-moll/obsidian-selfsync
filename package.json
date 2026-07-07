@@ -30,6 +30,7 @@
     "vitest": "^1.6.0"
   },
   "dependencies": {
+    "isomorphic-git": "^1.38.6",
     "node-diff3": "^3.2.1"
   }
 }

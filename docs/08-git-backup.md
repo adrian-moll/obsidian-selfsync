@@ -5,6 +5,14 @@ remote. It is a **backup/versioning** layer, completely independent of the sync
 transport (D7). It lets the user browse history and restore older note versions
 (UC9).
 
+> **Status: implemented (M5).** `src/git/git-backup.ts` (`GitBackup`) is
+> dynamically imported only on desktop, so mobile never loads `isomorphic-git`/
+> Node `fs`. It auto-commits after each sync (opt-in), exposes a "commit now"
+> command, and a **File-history view** (`src/ui/file-history-view.ts`) shows an
+> active note's commits with view/restore. `.gitignore` is seeded to exclude
+> SelfSync's own (`.obsidian/plugins/selfsync/`) data. Tested headlessly against a
+> real temp repo.
+
 ## Why desktop-only
 
 Mobile Obsidian cannot run git or shell commands, and the sync engine already

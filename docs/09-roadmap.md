@@ -62,9 +62,15 @@
   verifier (with L1/L3 coverage).
 - **M4 — CouchDB backend.** Implement the backend + ship `docker-compose.yml` and
   setup docs; add **L2** CouchDB container tests.
-- **M5 — Git backup.** Desktop-only versioning via `isomorphic-git`:
-  commit-on-change + push; **File-history view** (log/diff/restore); Gitea
-  container test.
+- **M5 — Git backup. ✅ DONE.** Desktop-only (`Platform.isDesktopApp`) versioning
+  via `isomorphic-git` on Node `fs`, dynamically imported so mobile never loads it
+  (verified: `require("fs")` sits in a lazy `__esm` closure). `GitBackup`:
+  init + seed `.gitignore` (excludes SelfSync's own data), commit-all (skips
+  no-ops), push (token auth), log, read-at-commit, restore. Auto-commits after
+  each sync (opt-in) + "Git backup: commit now" command. **File-history view**
+  lists an active note's commits with View (modal) + Restore. Settings section
+  (desktop only). Headless test against a real temp repo (commit/log/restore/
+  gitignore); a live Gitea container test is deferred. 58 tests green.
 - **M6 — Polish.** Setup wizard, Sync-view polish, **conflict list + side-by-side
   diff**, **BRAT release + GitHub Actions CI** (runs L1–L3), user docs, and the
   **L4 manual acceptance checklist**.
