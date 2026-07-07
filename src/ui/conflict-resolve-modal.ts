@@ -4,7 +4,7 @@
  * merged text to the canonical file and deletes the copy.
  */
 import { type App, Modal } from "obsidian";
-import { lineDiff } from "../util/line-diff.js";
+import { renderLineDiff } from "./diff-render.js";
 
 export interface ConflictResolveOpts {
   canonicalPath: string;
@@ -33,12 +33,7 @@ export class ConflictResolveModal extends Modal {
       text: `Left = current file. Right = conflict copy (${this.opts.conflictPath}). Changed lines are highlighted.`,
     });
 
-    const diff = contentEl.createDiv({ cls: "selfsync-diff" });
-    for (const row of lineDiff(this.opts.currentText, this.opts.conflictText)) {
-      const r = diff.createDiv({ cls: "selfsync-diff-row" + (row.changed ? " changed" : "") });
-      r.createDiv({ cls: "selfsync-diff-cell", text: row.left ?? "" });
-      r.createDiv({ cls: "selfsync-diff-cell", text: row.right ?? "" });
-    }
+    renderLineDiff(contentEl.createDiv(), this.opts.currentText, this.opts.conflictText);
 
     contentEl.createEl("h4", { text: "Merged result (edit as needed)" });
     const ta = contentEl.createEl("textarea", { cls: "selfsync-activity-log" });

@@ -71,6 +71,13 @@
   lists an active note's commits with View (modal) + Restore. Settings section
   (desktop only). Headless test against a real temp repo (commit/log/restore/
   gitignore); a live Gitea container test is deferred. 58 tests green.
+- **M5b — File-history enhancements. ✅ DONE.** Synthetic **Current** entry (live
+  working file) atop the commit list; **rendered preview ↔ source toggle**
+  (`MarkdownRenderer.render`, so plugin post-processors render); **any-two
+  side-by-side diff** (select two entries) + per-row "diff vs current" (reuses the
+  tested `lineDiff` via a shared `renderLineDiff`); **follows the active note**;
+  richer metadata (relative time, short hash, author); **restore confirmation**.
+  67 tests green.
 - **M6 — Polish. ◑ IN PROGRESS.**
   - **Done:** live Sync-view; **BRAT release + GitHub Actions CI**; **conflict list
     + side-by-side resolver** — clicking a conflict copy opens a diff (LCS line

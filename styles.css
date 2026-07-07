@@ -86,6 +86,51 @@ textarea.selfsync-activity-log {
   border-right: 1px solid var(--background-modifier-border);
 }
 
+.selfsync-diff-labels {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  font-weight: var(--font-semibold);
+  margin-bottom: 0.25rem;
+}
+
+/* File-history rows */
+.selfsync-history-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.selfsync-history-info {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.selfsync-history-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.selfsync-badge {
+  margin-left: 0.4rem;
+  padding: 0 0.35rem;
+  border-radius: var(--radius-s);
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  font-size: var(--font-ui-smaller);
+}
+
+.selfsync-rendered {
+  max-height: 55vh;
+  overflow: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  padding: 0.5rem 0.75rem;
+}
+
 
 .selfsync-empty {
   color: var(--text-faint);
