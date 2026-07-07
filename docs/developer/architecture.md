@@ -69,5 +69,22 @@ See `sync-engine.md` for the reconciliation rules and crash-safety details.
 - **Journal** — pending/incomplete op list for resume-on-startup.
 - **Remote manifest** — authoritative map of logical path → blob; lives on the
   backend, encrypted when E2EE is on.
-- **Plugin settings** — backend choice, credentials, E2EE toggle + verifier,
-  trigger config, exclude globs, Git settings.
+- **Plugin settings** — WebDAV endpoint + credentials, `secretStorage` mode, E2EE
+  toggle, trigger config, exclude globs, Git settings. Persisted via Obsidian's
+  `loadData`/`saveData` (`data.json`).
+
+### Secret storage at rest
+
+The WebDAV password and Git token are protected in `data.json` per the
+`secretStorage` setting (`plaintext` / `obfuscated` / `keychain`, default
+`keychain`). Values are stored **self-describing** so decode dispatches on a prefix
+and always works regardless of mode or device: `obf:v1:…` (reversible XOR — casual
+protection only), `kc:v1:…` (Electron `safeStorage`, desktop OS keychain), or
+unprefixed (plaintext, incl. legacy). `src/util/secret-store.ts` is Obsidian/Electron-free
+and unit-tested; the desktop keychain lives in `src/util/keychain-desktop.ts`,
+lazily imported behind a `Platform.isDesktopApp` guard (mirroring `git-backup.ts`)
+and injected as a `KeychainProvider`. Decode happens in `loadPersisted` (in-memory
+settings hold plaintext for auth); encode happens on a copy in `savePersisted`.
+Keychain unavailable → falls back to obfuscation; a `kc:` value that can't be
+decrypted here decodes to `""` (user re-enters). A passphrase mode is deferred to
+M3 (it would require an unlock prompt, breaking unattended sync).

@@ -1,7 +1,7 @@
 {
   "id": "selfsync",
   "name": "SelfSync",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "minAppVersion": "1.5.0",
   "description": "Self-hosted, bring-your-own-backend WebDAV sync and backup for your vault, with optional end-to-end encryption and desktop Git versioning.",
   "author": "Adrian Moll",

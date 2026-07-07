@@ -1,6 +1,7 @@
 /** Plugin settings model + settings tab. M0 exposes a minimal skeleton. */
 import { type App, Platform, PluginSettingTab, Setting } from "obsidian";
 import type SelfSyncPlugin from "./main.js";
+import { type SecretStorageMode } from "./util/secret-store.js";
 
 export interface GitSettings {
   enabled: boolean;
@@ -17,6 +18,8 @@ export interface GitSettings {
 
 export interface SelfSyncSettings {
   webdav: { url: string; username: string; password: string; rootDir: string };
+  /** How the WebDAV password and Git token are stored at rest in data.json. */
+  secretStorage: SecretStorageMode;
   encryptionEnabled: boolean;
   /** Sync the .obsidian config folder (default off — it churns across devices). */
   syncObsidianConfig: boolean;
@@ -32,6 +35,7 @@ export interface SelfSyncSettings {
 
 export const DEFAULT_SETTINGS: SelfSyncSettings = {
   webdav: { url: "", username: "", password: "", rootDir: "selfsync" },
+  secretStorage: "keychain",
   encryptionEnabled: false,
   syncObsidianConfig: false,
   syncOnStartup: true,
@@ -92,7 +96,7 @@ export class SelfSyncSettingTab extends PluginSettingTab {
     );
     new Setting(containerEl)
       .setName("WebDAV password")
-      .setDesc("For kDrive, use an app-specific password (not your login password).")
+      .setDesc("For kDrive, use an app-specific password (not your login password). Stored per the Backend security setting below.")
       .addText((t) => {
         t.inputEl.type = "password";
         t.setValue(this.plugin.settings.webdav.password).onChange(async (v) => {
@@ -109,6 +113,36 @@ export class SelfSyncSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }),
       );
+
+    const securityBase = "How the WebDAV password and Git token are stored on this device (in data.json). ";
+    const securitySetting = new Setting(containerEl)
+      .setName("Backend security")
+      .setDesc(securityBase)
+      .addDropdown((d) =>
+        d
+          .addOption("keychain", "Device keychain (recommended)")
+          .addOption("obfuscated", "Obfuscated")
+          .addOption("plaintext", "Plaintext")
+          .setValue(this.plugin.settings.secretStorage)
+          .onChange(async (v) => {
+            this.plugin.settings.secretStorage = v as SecretStorageMode;
+            await this.plugin.saveSettings(); // re-writes the secrets in the new mode
+            this.display();
+          }),
+      );
+    // Probe whether real keychain encryption is available here, then annotate.
+    void this.plugin.isKeychainAvailable().then((ok) => {
+      securitySetting.setDesc(
+        securityBase +
+          (this.plugin.settings.secretStorage === "keychain"
+            ? ok
+              ? "Device keychain is active — real encryption via your OS keychain."
+              : "Device keychain isn't available on this device — falling back to Obfuscated."
+            : this.plugin.settings.secretStorage === "obfuscated"
+              ? "Obfuscated: not stored as cleartext, but reversible — not real encryption."
+              : "Plaintext: stored as-is. Anyone who can read the vault folder can read it."),
+      );
+    });
 
     new Setting(containerEl)
       .setName("Hide file names (encrypted layout)")

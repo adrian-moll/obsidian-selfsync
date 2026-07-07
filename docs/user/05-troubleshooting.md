@@ -35,6 +35,14 @@ gone by the next sync, that's expected: some self-hosted servers briefly reject 
 too-fast conditional write, and SelfSync retries automatically after a short delay.
 No action needed unless it keeps repeating for the same file.
 
+## Password is blank after moving the vault to another computer
+
+If your **Backend security** mode is **Device keychain**, the saved password is
+encrypted for *that* device and OS user only — it can't be decrypted on a different
+machine or account, so it comes up empty there. Just re-enter the WebDAV password
+(and Git token) on the new device. See
+[Where your password is stored](02-backend-setup.md).
+
 ## Login rejected on kDrive
 
 kDrive's WebDAV endpoint does **not** accept your normal login password. Generate

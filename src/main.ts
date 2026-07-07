@@ -26,6 +26,7 @@ import { DEFAULT_EXCLUDES, OBSIDIAN_CONFIG_GLOB, OBSIDIAN_VOLATILE, makeExcluder
 import { WebDavBackend } from "./backend/webdav-backend.js";
 import { obsidianHttp } from "./backend/obsidian-http.js";
 import type { StorageBackend } from "./backend/storage-backend.js";
+import { decodeSecret, encodeSecret, type KeychainProvider } from "./util/secret-store.js";
 import type { Op, StateEntry } from "./types.js";
 
 interface PersistedData {
@@ -485,13 +486,53 @@ export default class SelfSyncPlugin extends Plugin {
       this.settings = this.mergeSettings(raw as Partial<SelfSyncSettings> | null);
       this.syncState = [];
     }
+    // Decode the at-rest-protected secrets so the in-memory settings hold
+    // plaintext (buildBackend/getGitBackup expect that). Any form decodes; a
+    // keychain value we can't read here yields "" → "not configured".
+    const keychain = await this.getKeychain();
+    this.settings.webdav.password = decodeSecret(this.settings.webdav.password, keychain);
+    this.settings.git.token = decodeSecret(this.settings.git.token, keychain);
     if (!this.settings.deviceId) this.settings.deviceId = crypto.randomUUID();
-    await this.savePersisted();
+    await this.savePersisted(); // re-writes in the current mode (auto-migrates legacy cleartext)
   }
 
   private async savePersisted(): Promise<void> {
-    const data: PersistedData = { settings: this.settings, syncState: this.syncState };
+    // Encode secrets on a COPY so this.settings stays plaintext in memory for auth.
+    const keychain = await this.getKeychain();
+    const mode = this.settings.secretStorage;
+    const settingsForDisk: SelfSyncSettings = {
+      ...this.settings,
+      webdav: { ...this.settings.webdav, password: encodeSecret(mode, this.settings.webdav.password, keychain) },
+      git: { ...this.settings.git, token: encodeSecret(mode, this.settings.git.token, keychain) },
+    };
+    const data: PersistedData = { settings: settingsForDisk, syncState: this.syncState };
     await this.saveData(data);
+  }
+
+  /**
+   * Lazily resolve the desktop OS-keychain provider (once). Returns null on
+   * mobile or if safeStorage isn't usable, so callers fall back to obfuscation.
+   */
+  private keychainResolved = false;
+  private keychain: KeychainProvider | null = null;
+  private async getKeychain(): Promise<KeychainProvider | null> {
+    if (this.keychainResolved) return this.keychain;
+    this.keychainResolved = true;
+    if (Platform.isDesktopApp) {
+      try {
+        const { getKeychainProvider } = await import("./util/keychain-desktop.js");
+        const provider = getKeychainProvider();
+        this.keychain = provider.isAvailable() ? provider : null;
+      } catch {
+        this.keychain = null;
+      }
+    }
+    return this.keychain;
+  }
+
+  /** Whether real OS-keychain encryption is available on this device (for the settings UI). */
+  async isKeychainAvailable(): Promise<boolean> {
+    return (await this.getKeychain()) !== null;
   }
 
   /** Called by the settings tab after edits. */
