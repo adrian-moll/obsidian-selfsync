@@ -14,6 +14,12 @@ const DEFAULT_BRANCH = "main";
 // HTTP push is weak on large packs — a single big push (e.g. a first backup with
 // large attachments) can stall/reset — so we keep each push a digestible size.
 const DEFAULT_MAX_PUSH_BYTES = 25 * 1024 * 1024;
+// Hard ceiling per HTTP request. isomorphic-git's node client (simple-get) sets
+// no socket timeout and ignores its `signal`, so a stalled receive-pack POST
+// hangs forever — which prevents the resumable per-commit retry from ever
+// kicking in. Bounding each request turns a hang into a fast, resumable error:
+// the commits that landed keep the remote advanced, so the next cycle resumes.
+const HTTP_TIMEOUT_MS = 120_000;
 
 export interface GitConfig {
   /** Absolute path to the vault (FileSystemAdapter.getBasePath()). */
@@ -213,14 +219,21 @@ export class GitBackup {
   }
 
   /**
-   * The isomorphic-git HTTP client, wrapped to log each request's method, path,
-   * status, and duration (and failures) when a diagnostic sink is provided — so a
-   * push timeout tells us WHICH request (ref advertisement GET vs pack POST) died
-   * and how long it took, instead of a bare "Request timed out".
+   * The isomorphic-git HTTP client, wrapped to (1) bound every request with
+   * {@link HTTP_TIMEOUT_MS} and (2) log its lifecycle when a diagnostic sink is
+   * provided.
+   *
+   * The `request` promise for a receive-pack POST does not resolve until the whole
+   * pack has uploaded AND the server has processed it, so logging only on
+   * completion leaves a blind spot: a slow pack build, a stalled upload, and a
+   * hung server all look identical (silence). We therefore log a "started" line
+   * BEFORE awaiting — so a capture shows whether the POST was even reached — plus
+   * the usual completion/failure line. The timeout rejects a stalled request so
+   * {@link pushIncremental} treats it as a failed commit and resumes next cycle
+   * (the underlying socket may linger, since simple-get ignores `signal`).
    */
   private http(): typeof nodeHttp {
     const log = this.cfg.log;
-    if (!log) return nodeHttp;
     return {
       request: async (req: Parameters<typeof nodeHttp.request>[0]) => {
         const start = Date.now();
@@ -231,14 +244,27 @@ export class GitBackup {
         } catch {
           /* keep full url */
         }
+        if (log) log(`http ${req.method} ${where} started…`);
+        let timer: ReturnType<typeof setTimeout> | undefined;
         try {
-          const res = await nodeHttp.request(req);
-          log(`http ${req.method} ${where} → ${res.statusCode} ${res.statusMessage} (${Date.now() - start}ms)`);
+          const res = await Promise.race([
+            nodeHttp.request(req),
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(
+                () => reject(new Error(`http ${req.method} ${where} timed out after ${HTTP_TIMEOUT_MS}ms`)),
+                HTTP_TIMEOUT_MS,
+              );
+            }),
+          ]);
+          if (log) log(`http ${req.method} ${where} → ${res.statusCode} ${res.statusMessage} (${Date.now() - start}ms)`);
           return res;
         } catch (e) {
           const err = e as { name?: string; message?: string; code?: string };
-          log(`http ${req.method} ${where} ✗ ${err?.name || "Error"} ${err?.code || ""}: ${err?.message} (${Date.now() - start}ms)`);
+          if (log)
+            log(`http ${req.method} ${where} ✗ ${err?.name || "Error"} ${err?.code || ""}: ${err?.message} (${Date.now() - start}ms)`);
           throw e;
+        } finally {
+          if (timer) clearTimeout(timer);
         }
       },
     };
