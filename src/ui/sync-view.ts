@@ -74,6 +74,12 @@ export class SelfSyncView extends ItemView {
         cls: "selfsync-error",
       });
     }
+    if (s.failedFiles > 0) {
+      list.createEl("li", {
+        text: `Failed (will retry): ${s.failedFiles}`,
+        cls: "selfsync-error",
+      });
+    }
     if (s.gitPushPending) list.createEl("li", { text: "Git: changes pending push" });
     if (s.lastError) list.createEl("li", { text: `Error: ${s.lastError}`, cls: "selfsync-error" });
 

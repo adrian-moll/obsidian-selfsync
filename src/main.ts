@@ -572,6 +572,7 @@ export default class SelfSyncPlugin extends Plugin {
         conflicts: existing,
         trackedFiles: this.syncState.filter((e) => !e.deleted).length,
         skippedLarge: res.skippedLarge.length,
+        failedFiles: res.failed.length,
       });
       this.logger.info(res.ops.length ? `Synced: ${summarizeOps(res.ops)}` : "Up to date");
       if (res.merged.length) {
@@ -581,6 +582,13 @@ export default class SelfSyncPlugin extends Plugin {
         this.logger.warn(
           `Skipped ${res.skippedLarge.length} file(s) over ${this.settings.maxFileMB} MB: ` +
             res.skippedLarge.slice(0, 4).join(", "),
+        );
+      }
+      if (res.failed.length) {
+        // Per-file errors (e.g. a server 500) don't fail the whole sync — the rest
+        // converged and these are retried next cycle.
+        this.logger.warn(
+          `Failed ${res.failed.length} file(s) this sync (will retry): ` + res.failed.slice(0, 4).join(", "),
         );
       }
       // Notify only when THIS sync created a new conflict copy.

@@ -22,6 +22,7 @@ export interface SyncUiState {
   trackedFiles: number; // files under sync (non-deleted state entries)
   gitPushPending: boolean; // committed but not yet pushed
   skippedLarge: number; // files skipped last sync for exceeding the size limit
+  failedFiles: number; // files whose op errored last sync (skipped, will retry)
 }
 
 type Listener = (state: SyncUiState) => void;
@@ -41,6 +42,7 @@ export class SyncStore {
     trackedFiles: 0,
     gitPushPending: false,
     skippedLarge: 0,
+    failedFiles: 0,
   };
   private readonly listeners = new Set<Listener>();
 

@@ -69,6 +69,9 @@ export interface SyncResult {
   existingConflicts: string[];
   /** Paths skipped this cycle because they exceed the max file size. */
   skippedLarge: string[];
+  /** Paths whose op failed this cycle (e.g. a server error) and were skipped so
+   *  the rest of the sync could proceed. Retried on the next cycle. */
+  failed: string[];
 }
 
 /** Format a byte count as megabytes for diagnostic logs. */
@@ -91,6 +94,23 @@ export function isConflictCopy(path: string): boolean {
 /** Map a conflict-copy path back to its canonical file (inverse of conflictCopyPath). */
 export function canonicalPathOf(conflictCopyPath: string): string {
   return conflictCopyPath.replace(/ \(conflict [^)]*\)/, "");
+}
+
+/** The manifest keys an op may mutate — used to snapshot/rollback a failed op. */
+function opPaths(op: Op): string[] {
+  switch (op.kind) {
+    case "move":
+      return [op.from, op.to];
+    case "conflict":
+      return [op.path, op.conflictCopyPath];
+    default:
+      return [op.path];
+  }
+}
+
+/** Human-readable path label for logs and the failed-paths list. */
+function opLabel(op: Op): string {
+  return op.kind === "move" ? `${op.from} -> ${op.to}` : op.path;
 }
 
 interface Outcomes {
@@ -201,6 +221,7 @@ export class SyncEngine {
 
     const outcomes: Outcomes = { merged: [], conflictCopies: [] };
     const appliedOps: Op[] = [];
+    const failed: string[] = [];
     const result = (conflict: boolean): SyncResult => ({
       ops: appliedOps,
       committed: appliedOps.length > 0,
@@ -209,6 +230,7 @@ export class SyncEngine {
       conflictCopies: outcomes.conflictCopies,
       existingConflicts: [...new Set([...existingConflicts, ...outcomes.conflictCopies])],
       skippedLarge: [...skipped],
+      failed: [...new Set(failed)],
     });
 
     if (ops.length === 0) return result(false);
@@ -228,7 +250,29 @@ export class SyncEngine {
       // a fresh manifest below; any other error aborts the whole sync). Cloning
       // the whole manifest per chunk was O(N²) and a large-vault memory hog.
       const chunkMutations: Array<() => Promise<void>> = [];
-      for (const op of chunk) await this.applyOp(op, manifest, chunkMutations, outcomes, log);
+      const succeeded: Op[] = [];
+      for (const op of chunk) {
+        // Snapshot the manifest entries + queued mutations this op may touch, so a
+        // failure (e.g. a server 500 on one file) rolls back cleanly and we can
+        // skip just that file instead of aborting the whole sync. (Since 0.10.0
+        // the manifest is mutated in place, so partial mutations must be undone.)
+        const mutBefore = chunkMutations.length;
+        const backup = opPaths(op).map((p) => [p, manifest.entries[p]] as const);
+        try {
+          await this.applyOp(op, manifest, chunkMutations, outcomes, log);
+          succeeded.push(op);
+        } catch (err) {
+          if (err instanceof ConditionalWriteError) throw err;
+          for (const [p, prev] of backup) {
+            if (prev === undefined) delete manifest.entries[p];
+            else manifest.entries[p] = prev;
+          }
+          chunkMutations.length = mutBefore;
+          const msg = err instanceof Error ? err.message : String(err);
+          failed.push(opLabel(op));
+          log(`  ✗ ${opLabel(op)}: ${msg}`);
+        }
+      }
 
       try {
         etag = await this.manifests.commit(manifest, etag);
@@ -254,7 +298,7 @@ export class SyncEngine {
       this.deps.state.beginBatch();
       for (const mutate of chunkMutations) await mutate();
       await this.deps.state.flush();
-      appliedOps.push(...chunk);
+      appliedOps.push(...succeeded);
       done += chunk.length;
       opts.onProgress?.(done, done + ops.length);
       log(`committed chunk: ${done}/${done + ops.length}`);
