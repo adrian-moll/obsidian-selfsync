@@ -36,8 +36,10 @@ encrypt content.
 - Each blob is encrypted with **AES-256-GCM**.
 - A **fresh random IV** per encryption operation, prepended to the ciphertext.
 - GCM's authentication tag guarantees integrity (tampered blobs fail to decrypt).
-- Large files are chunked (`sync-engine.md`); each chunk is encrypted
-  independently so transfers remain resumable.
+- Large downloads are streamed in ranged chunks (`sync-engine.md`). When content
+  encryption lands, the format must stream-decrypt (e.g. per-chunk framing) so a
+  large blob still never needs to be held whole in memory; this is a design
+  constraint for the future E2EE work, not yet implemented.
 
 ## Path privacy
 

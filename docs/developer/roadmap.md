@@ -56,8 +56,13 @@
     manifest commit + reconcile-on-startup + "absence is never a deletion". A
     *persistent* journal (faster resume) is deferred — an optimization, not
     required for correctness.
-  - **Deferred:** resumable/chunked transfers for very large binaries; the **L4**
-    real-device acceptance pass on iPad + Android against kDrive (manual).
+  - **Large-file downloads: DONE (0.11.x).** Blobs over 8 MiB stream in ranged
+    GETs to `appendBinary` (Obsidian ≥ 1.12.3), so large files download without
+    OOM on Android. Per-op resilience + 0-byte handling shipped alongside.
+    **Still deferred:** *resumable* transfers and *chunked uploads* (no ranged
+    read API for the local vault — large uploads are bounded by `maxFileMB`, and
+    clamped lower on mobile); the **L4** real-device acceptance pass on iPad +
+    Android against kDrive (manual).
 - **M3 — E2EE. ✗ NOT STARTED.** The `encryptionEnabled` setting and the opaque
   `BlobNaming` path exist, but no actual encryption is wired yet — enabling it
   today would obscure key names without protecting content. This is the main
@@ -115,7 +120,8 @@ behind the UI, release, and testing items woven through these milestones.
   moves preserve continuity.
 - **Kill-mid-sync (UC6/NFR1):** abort during upload → next start reconciles clean,
   no corruption, no half-written manifest.
-- **Large binary (UC7):** chunked/resumable transfer completes; hashes match.
+- **Large binary (UC7):** a >8 MiB file streams down (ranged reads) and hashes
+  match; over-cap upload is skipped, not crashed. (Resumable restart: future.)
 - **E2EE (UC10):** backend contents are ciphertext + opaque keys; wrong passphrase
   fails fast via the verifier.
 - **Git backup (UC9, desktop):** edits produce commits; an old version can be

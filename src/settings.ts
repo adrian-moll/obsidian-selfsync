@@ -30,10 +30,12 @@ export interface SelfSyncSettings {
   syncOnFileChange: boolean;
   excludeGlobs: string[];
   /**
-   * Skip files larger than this (MB) during sync. Reading a whole large file into
-   * memory (and, on mobile, base64-encoding it for the HTTP body) can OOM/crash
-   * Obsidian — notably on Android. 0 disables the guard. See docs/roadmap (chunked
-   * transfers are the eventual fix).
+   * Upper bound (MB) on a file we hold WHOLE in memory: uploads, and the fallback
+   * whole-blob download used only when the server can't do ranged reads. Downloads
+   * normally stream in chunks (via appendBinary) and are NOT limited by this.
+   * Reading a whole large file — and, on mobile, base64-encoding it across the
+   * native bridge — can OOM/crash Obsidian (notably Android), which is what this
+   * caps. 0 disables it on desktop; mobile always keeps a safe internal ceiling.
    */
   maxFileMB: number;
   /** Verbose logging + a rotating log file in the plugin folder (troubleshooting). */
@@ -213,10 +215,11 @@ export class SelfSyncSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Max file size (MB)")
+      .setName("Max upload size (MB)")
       .setDesc(
-        "Skip files larger than this during sync. Very large files are read whole into " +
-          "memory and can crash Obsidian (especially on Android). 0 disables the limit.",
+        "Limits files uploaded from this device (they're read whole into memory, which can " +
+          "crash Obsidian on mobile). Downloads stream in chunks and aren't limited by this. " +
+          "0 disables it on desktop; mobile keeps a safe internal ceiling regardless.",
       )
       .addText((t) =>
         t.setValue(String(this.plugin.settings.maxFileMB)).onChange(async (v) => {

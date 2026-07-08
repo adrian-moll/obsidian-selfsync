@@ -174,18 +174,15 @@ export class SyncEngine {
     const maxFileBytes = opts.maxFileBytes ?? 0;
     const log = opts.log ?? (() => {});
 
-    // Load the manifest first so oversized *remote* entries can be skipped too —
-    // a download materializes the whole blob in memory and can OOM just like an
-    // upload (the reported Android large-file crash).
     let { manifest, etag } = await this.manifests.load();
     log(`manifest loaded: ${Object.keys(manifest.entries).length} entries`);
 
+    // `maxFileBytes` caps only what we hold WHOLE in memory: uploads (scanned
+    // below) and the non-streamed download fallback. Downloads themselves are
+    // streamed in ranged chunks (fetchBlobToVault), so large remote files are no
+    // longer skipped — only oversized LOCAL files (which can't be chunk-uploaded)
+    // land in `skipped`.
     const skipped = new Set<string>();
-    if (maxFileBytes > 0) {
-      for (const [p, e] of Object.entries(manifest.entries)) {
-        if (!e.deleted && e.size > maxFileBytes) skipped.add(p);
-      }
-    }
 
     const local = await scanVault(
       this.deps.vault,
@@ -259,7 +256,7 @@ export class SyncEngine {
         const mutBefore = chunkMutations.length;
         const backup = opPaths(op).map((p) => [p, manifest.entries[p]] as const);
         try {
-          await this.applyOp(op, manifest, chunkMutations, outcomes, log);
+          await this.applyOp(op, manifest, chunkMutations, outcomes, maxFileBytes, log);
           succeeded.push(op);
         } catch (err) {
           if (err instanceof ConditionalWriteError) throw err;
@@ -319,6 +316,7 @@ export class SyncEngine {
     path: string,
     blobKey: string,
     size: number,
+    maxWholeBytes: number,
     log: (msg: string) => void,
   ): Promise<ArrayBuffer | null> {
     const { vault, backend } = this.deps;
@@ -350,7 +348,16 @@ export class SyncEngine {
         }
         return null;
       }
-      log(`  ↳ ranged read unavailable; falling back to whole-blob read`);
+      log(`  ↳ ranged read unavailable; would read whole blob`);
+    }
+    // Streaming wasn't possible (small blob, or the server has no range support).
+    // A blob up to one chunk is always safe to read whole; a genuinely large one
+    // that we can't stream would risk the very OOM we avoid, so refuse it when it
+    // exceeds the whole-in-memory cap — per-op resilience reports it and retries.
+    if (size > DOWNLOAD_CHUNK_BYTES && maxWholeBytes > 0 && size > maxWholeBytes) {
+      throw new Error(
+        `blob ${mb(size)} MB exceeds the ${mb(maxWholeBytes)} MB in-memory limit and the server does not support ranged reads`,
+      );
     }
     const data = await backend.read(blobKey);
     await vault.writeBinary(path, data);
@@ -372,6 +379,7 @@ export class SyncEngine {
     working: Manifest,
     stateMutations: Array<() => Promise<void>>,
     outcomes: Outcomes,
+    maxFileBytes: number,
     log: (msg: string) => void = () => {},
   ): Promise<void> {
     const { vault, backend, state } = this.deps;
@@ -397,7 +405,7 @@ export class SyncEngine {
       case "download": {
         const entry = working.entries[op.path];
         log(`download ${op.path} (${mb(entry.size)} MB)`);
-        const data = await this.fetchBlobToVault(op.path, entry.blobKey, entry.size, log);
+        const data = await this.fetchBlobToVault(op.path, entry.blobKey, entry.size, maxFileBytes, log);
         const st = await vault.stat(op.path);
         stateMutations.push(() =>
           state.put({

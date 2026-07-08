@@ -11,16 +11,6 @@ export function emptyManifest(device: string): Manifest {
   };
 }
 
-export function cloneManifest(m: Manifest): Manifest {
-  return {
-    formatVersion: m.formatVersion,
-    updatedBy: m.updatedBy,
-    entries: Object.fromEntries(
-      Object.entries(m.entries).map(([k, v]) => [k, { ...v }]),
-    ),
-  };
-}
-
 /** Next version number to assign for a path (monotonic per path). */
 export function nextVersion(m: Manifest, path: string): number {
   return (m.entries[path]?.version ?? 0) + 1;

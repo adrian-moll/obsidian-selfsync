@@ -529,7 +529,14 @@ export default class SelfSyncPlugin extends Plugin {
           this.store.update({ status: "syncing", detail: `Syncing… ${done}/${total}` });
         }
       };
-      const maxFileBytes = this.settings.maxFileMB > 0 ? this.settings.maxFileMB * 1024 * 1024 : 0;
+      // Cap only what we hold WHOLE in memory (uploads + non-streamed reads);
+      // downloads stream in chunks regardless of size. On mobile, clamp to a safe
+      // ceiling — a big file edited on the phone can't be chunk-uploaded (no ranged
+      // read API) and would OOM, so it's skipped with a warning instead.
+      const MB = 1024 * 1024;
+      const MOBILE_WHOLE_CAP = 20 * MB;
+      const cap = this.settings.maxFileMB > 0 ? this.settings.maxFileMB * MB : 0;
+      const maxFileBytes = Platform.isDesktopApp ? cap : cap > 0 ? Math.min(cap, MOBILE_WHOLE_CAP) : MOBILE_WHOLE_CAP;
       this.logger.debug(`Sync start (${trigger}); maxFileMB=${this.settings.maxFileMB}`);
       const res = await engine.sync({
         timestampIso: new Date().toISOString(),

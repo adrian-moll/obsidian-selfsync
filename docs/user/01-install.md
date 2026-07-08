@@ -1,5 +1,9 @@
 # Install
 
+**Requires Obsidian 1.12.3 or newer** on every device (SelfSync uses the
+`appendBinary` API introduced in 1.12.3 to stream large files without crashing on
+mobile). Update Obsidian first if you're on an older version.
+
 SelfSync isn't in the Obsidian community plugin store yet. Install it with
 **BRAT** ([Beta Reviewer's Auto-update Tool](https://github.com/TfTHacker/obsidian42-brat)),
 which works on desktop **and** mobile and keeps the plugin auto-updated.

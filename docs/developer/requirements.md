@@ -56,7 +56,8 @@
 - **NFR2 — Data safety over convenience.** Prefer conflict copies to data loss.
   All remote mutations are atomic or recoverable.
 - **NFR3 — Performance on large vaults.** Content-hash change detection, transfer
-  only what changed, chunked/resumable transfers for large binaries.
+  only what changed, streamed ranged downloads for large binaries (resumable
+  transfers and chunked uploads remain future work).
 - **NFR4 — Cross-platform, single codebase.** Windows, iPadOS, Android. The sync
   path uses only WebCrypto and the Obsidian `DataAdapter` (both mobile-safe). Node
   APIs are confined to the desktop-only Git layer.

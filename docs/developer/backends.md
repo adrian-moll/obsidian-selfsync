@@ -45,9 +45,10 @@ interface StorageBackend {
 ```
 
 The engine stores two kinds of objects through this interface: **content blobs**
-(one per file, or per chunk for large files) and the **manifest** (a single
-well-known key). Conditional writes matter mainly for the manifest, to detect
-concurrent writers (`sync-engine.md`).
+(one per file) and the **manifest** (a single well-known key). Large downloads
+read a blob in byte ranges via the optional `head`/`readRange` methods (streamed
+to disk); the blob itself is still a single object. Conditional writes matter
+mainly for the manifest, to detect concurrent writers (`sync-engine.md`).
 
 ## Remote layout: mirror vs opaque (D12)
 

@@ -82,8 +82,10 @@ The Git-backed history browser is a separate `ItemView`, gated by
 - **Encryption** — per-backend E2EE toggle; passphrase entry; verifier status.
 - **Triggers** — startup on/off, interval length, debounce delay,
   quit/background flush on/off.
-- **Max file size (MB)** — skip files above this to avoid the large-file OOM crash
-  (notably Android); 0 disables. See `git-backup.md`/engine `maxFileBytes`.
+- **Max upload size (MB)** — caps files uploaded from this device (read whole into
+  memory, which can OOM mobile). Downloads stream in ranged chunks and are not
+  limited by this. 0 disables on desktop; mobile keeps a safe internal ceiling.
+  See engine `maxFileBytes`.
 - **Debug logging** — verbose leveled logging to a rotating `selfsync.log` in the
   plugin folder (`util/logger.ts`; mobile-safe via `DataAdapter.append`).
 - **Scope** — advanced exclude globs (defaults to whole vault).

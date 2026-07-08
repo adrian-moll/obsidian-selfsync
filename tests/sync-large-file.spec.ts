@@ -1,14 +1,66 @@
 /**
- * The max-file-size guard (the Android large-file crash fix). Oversized files must
- * never be read into memory, never propagate, and — critically — never be treated
- * as a deletion just because they were skipped locally.
+ * The max-file-size guard. It caps only what we hold WHOLE in memory: uploads and
+ * the non-streamed download fallback. Oversized LOCAL files are never uploaded and
+ * — critically — never treated as a deletion. Downloads stream in ranged chunks,
+ * so large REMOTE files are pulled regardless of the cap (see the download tests).
  */
 import { describe, expect, it } from "vitest";
-import { MemoryBackend } from "../src/backend/storage-backend.js";
+import {
+  MemoryBackend,
+  type BackendCapabilities,
+  type ReadResult,
+  type RemoteEntry,
+  type StorageBackend,
+} from "../src/backend/storage-backend.js";
 import { dec, enc, makeDevice } from "./support/devices.js";
+
+/** A backend with NO ranged-read support (no head/readRange), forcing the
+ *  whole-blob download fallback — like a server that ignores Range requests. */
+class NoRangeBackend implements StorageBackend {
+  constructor(private readonly inner: MemoryBackend) {}
+  testConnection() {
+    return this.inner.testConnection();
+  }
+  list(): Promise<RemoteEntry[]> {
+    return this.inner.list();
+  }
+  read(key: string): Promise<ArrayBuffer> {
+    return this.inner.read(key);
+  }
+  readWithMeta(key: string): Promise<ReadResult | null> {
+    return this.inner.readWithMeta(key);
+  }
+  write(key: string, data: ArrayBuffer, prevEtag?: string): Promise<string> {
+    return this.inner.write(key, data, prevEtag);
+  }
+  remove(key: string, prevEtag?: string): Promise<void> {
+    return this.inner.remove(key, prevEtag);
+  }
+  move(from: string, to: string): Promise<void> {
+    return this.inner.move(from, to);
+  }
+  capabilities(): BackendCapabilities {
+    return this.inner.capabilities();
+  }
+}
 
 const SMALL = "hi";
 const BIG = "x".repeat(1000);
+
+/** A buffer larger than one download chunk (8 MiB), to exercise streaming. */
+function bigBuffer(): ArrayBuffer {
+  const n = 9 * 1024 * 1024 + 77;
+  const u = new Uint8Array(n);
+  for (let i = 0; i < n; i++) u[i] = (i * 31) & 0xff;
+  return u.buffer;
+}
+function sameBytes(a: ArrayBuffer, b: ArrayBuffer): boolean {
+  if (a.byteLength !== b.byteLength) return false;
+  const x = new Uint8Array(a);
+  const y = new Uint8Array(b);
+  for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return false;
+  return true;
+}
 
 describe("max file size guard", () => {
   it("skips a new oversized local file (never uploads it) but syncs small ones", async () => {
@@ -51,17 +103,34 @@ describe("max file size guard", () => {
     expect(dec(await B.vault.readBinary("note.md"))).toBe(SMALL);
   });
 
-  it("skips downloading an oversized remote file (would OOM on the receiver too)", async () => {
+  it("DOWNLOADS an oversized remote file via streaming (the cap is upload-only)", async () => {
     const backend = new MemoryBackend();
     const A = makeDevice(backend, "A");
     const B = makeDevice(backend, "B");
-    // A uploads a big file with NO cap.
-    await A.vault.writeBinary("big.bin", enc(BIG));
+    const content = bigBuffer(); // > 8 MiB → streamed
+    await A.vault.writeBinary("big.bin", content);
     await A.sync();
 
-    // B syncs WITH a cap → must not pull the oversized blob.
-    const rb = await B.sync({ maxFileBytes: 100 });
-    expect(rb.skippedLarge).toContain("big.bin");
+    // B syncs WITH a small cap → downloads are streamed, so it still arrives and
+    // is not reported as skipped.
+    const rb = await B.sync({ maxFileBytes: 1024 * 1024 });
+    expect(rb.skippedLarge).not.toContain("big.bin");
+    expect(await B.vault.exists("big.bin")).toBe(true);
+    expect(sameBytes(await B.vault.readBinary("big.bin"), content)).toBe(true);
+  });
+
+  it("reports (does not crash on) an over-cap remote file when the server has no range support", async () => {
+    const inner = new MemoryBackend();
+    const A = makeDevice(inner, "A");
+    await A.vault.writeBinary("big.bin", bigBuffer()); // > 8 MiB, > cap below
+    await A.sync();
+
+    // B's backend can't do ranged reads and the blob exceeds the whole-in-memory
+    // cap, so it must be reported as failed (retry next cycle), never read whole.
+    const B = makeDevice(new NoRangeBackend(inner), "B");
+    const rb = await B.sync({ maxFileBytes: 1024 * 1024 });
+    expect(rb.committed).toBe(false);
+    expect(rb.failed).toContain("big.bin");
     expect(await B.vault.exists("big.bin")).toBe(false);
   });
 });

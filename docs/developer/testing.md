@@ -71,10 +71,11 @@ assert **convergence** and data safety:
 - **Delete & rename propagation** (UC4/UC5): tombstones honored, no resurrection;
   moves preserve continuity.
 - **Kill-mid-sync** (UC6/NFR1): abort a transfer partway, restart the engine →
-  journal replay yields a clean, uncorrupted, fully converged state; no
-  half-written manifest.
-- **Resumable large binary** (UC7): interrupted chunked transfer resumes; final
-  hash matches.
+  re-reconciling against the committed manifest + State DB (chunked per-~100-op
+  commits) yields a clean, fully converged state; no half-written manifest.
+- **Large binary** (UC7): a file over the chunk size downloads via streamed
+  ranged reads (`tests/engine-chunked-download.spec.ts`); final bytes match.
+  (Resumable/partial-chunk restart is future work.)
 - **E2EE round-trip** (UC10): with encryption on, backend blobs are ciphertext
   with opaque keys; a second device with the right passphrase decrypts correctly;
   a wrong passphrase fails fast with no writes.

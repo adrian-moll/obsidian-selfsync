@@ -139,9 +139,17 @@ concurrent multi-device syncs instead of restarting from zero.
 ## Transfer manager
 
 - Transfers only changed blobs (hash-based change detection, NFR3).
-- **Chunked, resumable** uploads/downloads for large binaries (UC7): a blob is
-  split into fixed-size chunks recorded in the manifest entry; partially
-  transferred chunks resume rather than restart.
+- **Streamed downloads for large binaries:** a blob over 8 MiB is fetched in
+  ranged `GET`s and written straight to disk with `DataAdapter.appendBinary`
+  (Obsidian ≥ 1.12.3), so the whole file is never held in memory — this is what
+  keeps large downloads from OOM-ing on Android. The blob stays a single object
+  (no per-chunk manifest entries); if the server can't do ranged reads the engine
+  falls back to a whole-blob read, bounded by the in-memory cap (`maxFileBytes`).
+- **Uploads are not chunked** (there is no ranged *read* API for the local vault),
+  so they read the whole file; `maxFileBytes` bounds them and is clamped lower on
+  mobile. Resumable transfers remain future work (see roadmap).
+- Per-op resilience: a single file's transfer error is logged and skipped (not
+  fatal), and retried next cycle.
 - Retries with backoff on transient network errors; surfaces persistent errors to
   the status indicator (FR7).
 

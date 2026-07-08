@@ -9,8 +9,7 @@ Obsidian Plugin (TypeScript, esbuild)
 │   ├─ Change detector  (vault scan via DataAdapter: path, size, mtime, SHA-256)
 │   ├─ Local State DB   (last-synced snapshot per file: base for 3-way merge)
 │   ├─ Reconciler       (3-way diff → op list; conflict = keep-both)
-│   ├─ Journal          (crash-safe op queue; resume after kill)   ← NFR1
-│   └─ Transfer manager (chunked/resumable put/get, retries)
+│   └─ Transfer manager (streamed ranged download; per-op resilient; retries)
 ├─ Crypto layer (WebCrypto)   ← optional E2EE, wraps blobs + path map
 ├─ Remote Manifest/Index      ← the source of truth for "what exists remotely"
 ├─ Backend abstraction  interface StorageBackend

@@ -19,7 +19,9 @@ An Obsidian plugin is three files placed in
 - A **GitHub repository** for the plugin.
 - Repo root also contains `manifest.json` and **`versions.json`** (maps plugin
   version → minimum Obsidian version) — required for BRAT/Obsidian to pick a
-  compatible release.
+  compatible release. The floor is currently **1.12.3** (large-file downloads use
+  `DataAdapter.appendBinary`, added in 1.12.3); don't lower it, and keep
+  `versions.json` in sync when it changes.
 - **Tagged releases**: each release tag (e.g. `1.2.0`, matching `manifest.json`
   `version`) has `main.js`, `manifest.json`, and `styles.css` attached as assets.
 

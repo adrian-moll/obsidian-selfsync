@@ -70,6 +70,22 @@ your password).
 
 (Git backup is desktop-only; it won't run on mobile.)
 
+## "Skipped (too large)" or "Failed (will retry)" in the panel
+
+These counts on the Sync panel are informational — the rest of your vault still
+syncs:
+
+- **Skipped (too large):** a file exceeds the **Max upload size (MB)** setting and
+  wasn't uploaded *from this device*. Downloads aren't limited (large files stream
+  in), so files created on desktop still reach mobile; only large files **created
+  or edited on the phone** are held back (a phone can't safely upload very large
+  files). Raise the limit in **Settings → SelfSync** if you need to, or add the
+  file from a desktop.
+- **Failed (will retry):** a file's transfer errored this cycle (e.g. the server
+  returned an error for it) and was skipped so everything else could finish; it's
+  retried automatically next sync. If the same file keeps failing, enable **Debug
+  logging** and check `selfsync.log` for the `✗ <path>` line to see why.
+
 ## Still stuck?
 
 Copy the Activity log (button in the SelfSync panel) and open an issue on the

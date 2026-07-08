@@ -1,10 +1,10 @@
 /**
  * WebDAV StorageBackend (primary target: Infomaniak kDrive).
  *
- * Blobs are stored as flat files under a configured `rootDir`; keys are file
- * names (no nested folders), so only the root collection needs creating. The
- * behaviors below were confirmed against real kDrive in spike S2
- * (docs/06-backends.md):
+ * Blobs are stored under a configured `rootDir`; keys may contain "/" separators
+ * (mirror layout preserves the vault's folder structure), so parent collections
+ * are created as needed (see `ensureParents`). The behaviors below were confirmed
+ * against real kDrive in spike S2 (docs/06-backends.md):
  *   - ETags come from PROPFIND <getetag>, XML-entity-encoded → must be decoded.
  *   - PUT does not return an ETag header → a follow-up PROPFIND fetches it.
  *   - If-Match / If-None-Match conditional writes are honored (412 on mismatch).
