@@ -14,11 +14,11 @@ first. Nothing here blocks normal sync.
 - **End-to-end encryption (E2EE)** — the toggle and opaque-key layout exist, but no
   content encryption is wired yet. The main unbuilt feature. See **M3** and
   `encryption.md`.
-- **State DB storage on mobile** — the last-synced snapshot is one JSON blob in
-  `data.json` (persisted once per ~100-op chunk). Fine at current scale; IndexedDB
-  vs JSON is still an open perf question for very large vaults. See spike **S3**.
 - **Real-device acceptance (L4)** and a **Dockerized WebDAV CI test (L2)** — manual
   / infra items, not code. See **M2** and **M1**.
+
+Recently resolved: **State DB storage (spike S3)** — the snapshot now lives in
+IndexedDB (only changed keys written per flush), with a JSON fallback (0.14.0).
 
 ## Tech stack
 
@@ -168,5 +168,11 @@ behind the UI, release, and testing items woven through these milestones.
   `If-None-Match: *`. Caveat: `PUT` returns no ETag header, so a follow-up
   `PROPFIND` is needed after each write. ⇒ `conditionalWrites = true`; no
   lock-object fallback required for kDrive. See `backends.md`.
-- **S3 — State DB storage on mobile.** Choose IndexedDB vs plugin-data JSON for the
-  local snapshot, based on size/perf on large vaults.
+- **S3 — State DB storage on mobile. ✅ RESOLVED (0.14.0).** Chose **IndexedDB**
+  for the local snapshot (`IndexedDbStateStore` — in-memory mirror for reads, only
+  changed keys written per flush in one transaction, so a sync costs O(changed) not
+  O(total state)), with **JsonStateStore as an automatic fallback** when IndexedDB
+  is unavailable. Origin-scoped, so the DB is namespaced per vault (`app.appId`);
+  legacy `data.json` state is migrated once and `data.json` slimmed to settings.
+  Losing the store is safe (reconcile re-indexes). See `state-db.ts` /
+  `indexeddb-state-store.ts`.

@@ -63,9 +63,10 @@ See `sync-engine.md` for the reconciliation rules and crash-safety details.
 
 ## Persistent state
 
-- **Local State DB** — per-file last-synced snapshot (merge base). Storage choice
-  (IndexedDB vs plugin-data JSON) is spike **S3** in `roadmap.md`.
-- **Journal** — pending/incomplete op list for resume-on-startup.
+- **Local State DB** — per-file last-synced snapshot (merge base). Stored in
+  **IndexedDB** (`IndexedDbStateStore`: in-memory mirror, only changed keys written
+  per flush), with a **JSON fallback** (`JsonStateStore` → `data.json`) when
+  IndexedDB is unavailable. Namespaced per vault; safe to lose (reconcile rebuilds).
 - **Remote manifest** — authoritative map of logical path → blob; lives on the
   backend, encrypted when E2EE is on.
 - **Plugin settings** — WebDAV endpoint + credentials, `secretStorage` mode, E2EE

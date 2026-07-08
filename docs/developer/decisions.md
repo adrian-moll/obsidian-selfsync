@@ -110,4 +110,6 @@ bundled, so the user does not need a system git binary. See `git-backup.md`.
 - **S1** — Which mobile lifecycle events actually fire (tunes D5 accelerators).
 - **S2** — Whether Infomaniak kDrive WebDAV supports usable etags / `If-Match`
   conditional writes (affects manifest concurrency strategy; see `backends.md`).
-- **S3** — Local State DB storage: IndexedDB vs plugin-data JSON on large vaults.
+- **S3** — Local State DB storage: **resolved (0.14.0)** → IndexedDB
+  (`IndexedDbStateStore`, only changed keys per flush) with a JSON fallback; see
+  `roadmap.md`.

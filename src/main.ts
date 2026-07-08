@@ -20,7 +20,8 @@ import { StatusController } from "./ui/status.js";
 import { SyncStore } from "./ui/sync-store.js";
 import { ObsidianVaultAdapter } from "./vault/obsidian-vault-adapter.js";
 import { ObsidianBaseStore } from "./vault/obsidian-base-store.js";
-import { JsonStateStore } from "./engine/state-db.js";
+import type { StateStore } from "./engine/state-db.js";
+import { createStateStore } from "./engine/indexeddb-state-store.js";
 import { SyncEngine } from "./engine/engine.js";
 import { SyncScheduler } from "./engine/scheduler.js";
 import { MirrorNaming, OpaqueNaming } from "./engine/naming.js";
@@ -33,7 +34,9 @@ import type { Op, StateEntry } from "./types.js";
 
 interface PersistedData {
   settings: SelfSyncSettings;
-  syncState: StateEntry[];
+  /** Legacy: the sync state now lives in IndexedDB. Still written on the JSON
+   *  fallback, and read once at load to migrate into IndexedDB. */
+  syncState?: StateEntry[];
 }
 
 const CHANGE_DEBOUNCE_MS = 3000;
@@ -81,8 +84,9 @@ function buildExcludePatterns(settings: SelfSyncSettings): string[] {
 
 export default class SelfSyncPlugin extends Plugin {
   settings!: SelfSyncSettings;
-  private syncState: StateEntry[] = [];
-  private stateStore!: JsonStateStore;
+  private syncState: StateEntry[] = []; // load/migration input + JSON-fallback state
+  private stateStore!: StateStore;
+  private usingIndexedDb = false;
   private store = new SyncStore();
   private logger = new Logger({ onEntry: (_lvl, msg) => this.store.log(msg) });
   private status?: StatusController;
@@ -99,10 +103,7 @@ export default class SelfSyncPlugin extends Plugin {
     // Attempt a push on the first backup to drain any commits stranded from a
     // previous session (e.g. a push that timed out).
     this.gitPushPending = this.settings.git.enabled;
-    this.stateStore = new JsonStateStore(this.syncState, async (all) => {
-      this.syncState = all;
-      await this.savePersisted();
-    });
+    await this.initStateStore();
     this.scheduler = new SyncScheduler((trigger) => this.runSync(trigger));
 
     this.registerView(
@@ -131,7 +132,7 @@ export default class SelfSyncPlugin extends Plugin {
     this.store.update({
       backendLabel: this.backendLabel(),
       encrypted: this.settings.encryptionEnabled,
-      trackedFiles: this.syncState.filter((e) => !e.deleted).length,
+      trackedFiles: await this.countTrackedFiles(),
       gitPushPending: this.gitPushPending,
     });
 
@@ -577,7 +578,7 @@ export default class SelfSyncPlugin extends Plugin {
         detail: existing.length ? `${existing.length} conflict file(s)` : "Idle",
         lastSyncIso: nowIso,
         conflicts: existing,
-        trackedFiles: this.syncState.filter((e) => !e.deleted).length,
+        trackedFiles: await this.countTrackedFiles(),
         skippedLarge: res.skippedLarge.length,
         failedFiles: res.failed.length,
       });
@@ -624,17 +625,48 @@ export default class SelfSyncPlugin extends Plugin {
     }
   }
 
+  /** Count non-deleted tracked files (for the status panel), from the state store. */
+  private async countTrackedFiles(): Promise<number> {
+    return (await this.stateStore.all()).filter((e) => !e.deleted).length;
+  }
+
   /** Clear the local sync index so the next sync re-indexes against the backend. */
   private async resetSyncState(): Promise<void> {
+    await this.stateStore.clear();
     this.syncState = [];
-    this.stateStore = new JsonStateStore(this.syncState, async (all) => {
-      this.syncState = all;
-      await this.savePersisted();
-    });
-    await this.savePersisted();
     this.store.update({ trackedFiles: 0 });
     this.logger.info("Local sync state reset — next sync re-indexes against the backend");
     new Notice("SelfSync: local sync state reset. Run 'Sync now' to re-index.");
+  }
+
+  /**
+   * Select and initialise the sync-state backend: IndexedDB (scales to large
+   * vaults — persists only changed keys) with an automatic JSON fallback. On the
+   * first IndexedDB run any legacy data.json state is migrated in, and data.json is
+   * slimmed to settings-only. Losing the store is safe — the next sync re-indexes.
+   */
+  private async initStateStore(): Promise<void> {
+    const jsonPersist = async (all: StateEntry[]): Promise<void> => {
+      this.syncState = all;
+      await this.savePersisted();
+    };
+    const vaultId = (this.app as unknown as { appId?: string }).appId || this.app.vault.getName() || "default";
+    const idb = typeof indexedDB !== "undefined" ? indexedDB : undefined;
+    const { store, backend, migrated } = await createStateStore({
+      indexedDB: idb,
+      dbName: `selfsync-state-${vaultId}`,
+      legacyEntries: this.syncState,
+      jsonPersist,
+    });
+    this.stateStore = store;
+    this.usingIndexedDb = backend === "indexeddb";
+    this.logger.debug(`State store: ${backend}${migrated ? " (migrated from data.json)" : ""}`);
+    if (this.usingIndexedDb) {
+      if (migrated) await this.savePersisted(); // drop syncState from data.json
+      // Ask the OS to keep the DB across storage pressure (best-effort).
+      const p = navigator.storage?.persist?.();
+      if (p) void p.catch(() => {});
+    }
   }
 
   private mergeSettings(raw: Partial<SelfSyncSettings> | null | undefined): SelfSyncSettings {
@@ -675,7 +707,10 @@ export default class SelfSyncPlugin extends Plugin {
       webdav: { ...this.settings.webdav, password: encodeSecret(mode, this.settings.webdav.password, keychain) },
       git: { ...this.settings.git, token: encodeSecret(mode, this.settings.git.token, keychain) },
     };
-    const data: PersistedData = { settings: settingsForDisk, syncState: this.syncState };
+    // On IndexedDB the state lives in the DB, so data.json holds settings only.
+    const data: PersistedData = this.usingIndexedDb
+      ? { settings: settingsForDisk }
+      : { settings: settingsForDisk, syncState: this.syncState };
     await this.saveData(data);
   }
 

@@ -1,8 +1,10 @@
 /**
  * The local State DB: the per-file last-synced snapshot that forms the 3-way
- * merge base (docs/05-sync-engine.md). M0 ships an in-memory implementation;
- * a persistent implementation (IndexedDB vs plugin-data JSON — spike S3) lands
- * later. Kept behind an interface so the engine and tests don't care which.
+ * merge base (docs/05-sync-engine.md). Two persistent implementations exist behind
+ * this interface: the plugin default is IndexedDbStateStore (writes only changed
+ * keys — scales to large vaults, spike S3), with JsonStateStore (whole snapshot to
+ * data.json) as the automatic fallback when IndexedDB is unavailable. Tests use
+ * MemoryStateStore. The engine and tests don't care which.
  */
 import type { StateEntry } from "../types.js";
 
@@ -21,6 +23,8 @@ export interface StateStore {
    */
   beginBatch(): void;
   flush(): Promise<void>;
+  /** Drop all entries (used by the "reset sync state" command). */
+  clear(): Promise<void>;
 }
 
 /**
@@ -73,6 +77,12 @@ export class JsonStateStore implements StateStore {
     await this.persist(this.snapshot());
   }
 
+  async clear(): Promise<void> {
+    this.entries.clear();
+    this.batching = false;
+    await this.persist([]);
+  }
+
   async toMap(): Promise<Map<string, StateEntry>> {
     return new Map([...this.entries].map(([k, v]) => [k, { ...v }]));
   }
@@ -104,6 +114,10 @@ export class MemoryStateStore implements StateStore {
 
   async flush(): Promise<void> {
     // No persistence to flush.
+  }
+
+  async clear(): Promise<void> {
+    this.entries.clear();
   }
 
   async toMap(): Promise<Map<string, StateEntry>> {

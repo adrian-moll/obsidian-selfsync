@@ -1,6 +1,6 @@
 {
   "name": "obsidian-selfsync",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Self-hosted, bring-your-own-backend sync and backup for Obsidian.",
   "main": "main.js",
   "type": "module",
@@ -23,6 +23,7 @@
     "@types/node": "^20.11.0",
     "builtin-modules": "^3.3.0",
     "esbuild": "^0.21.5",
+    "fake-indexeddb": "^6.2.5",
     "obsidian": "^1.5.7-1",
     "tslib": "^2.6.2",
     "typescript": "^5.4.5",

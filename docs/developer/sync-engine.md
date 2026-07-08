@@ -35,7 +35,9 @@ interface StateEntry {
 }
 ```
 
-Storage backend for this DB is spike **S3** (IndexedDB vs plugin-data JSON).
+This DB is stored in **IndexedDB** (`IndexedDbStateStore`; only changed keys are
+written per flush), with a **JSON fallback** to `data.json` (`JsonStateStore`) when
+IndexedDB is unavailable — resolved spike **S3** (`roadmap.md`).
 
 ## Remote manifest
 
