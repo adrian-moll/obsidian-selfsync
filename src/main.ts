@@ -117,15 +117,6 @@ export default class SelfSyncPlugin extends Plugin {
           this.store,
           () => void this.scheduler.trigger("manual"),
           (conflictPath) => void this.openResolver(conflictPath),
-          () =>
-            Platform.isDesktopApp && this.settings.git.enabled
-              ? {
-                  commitNow: () => void this.runGitBackup("manual"),
-                  pushNow: () => void this.runGitBackup("manual", true),
-                  fileHistory: () => void this.activateFileHistory(),
-                }
-              : null,
-          () => this.testWebDavConnection(),
           () => this.openAdvanced(),
         ),
     );

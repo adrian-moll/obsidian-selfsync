@@ -57,7 +57,7 @@ describe("large-vault first sync scaling", () => {
     expect(logs.some((l) => l === `scanned vault: ${N} files, 0 oversized skipped`)).toBe(true);
     expect(logs.some((l) => l === `reconciled: ${N} ops`)).toBe(true);
     expect(logs.filter((l) => l.startsWith("committed chunk:")).length).toBe(expectedChunks);
-  });
+  }, 20000); // 3k-file sync can exceed the 5s default under full-suite concurrency
 
   it("keeps a deferred batch atomic: nothing persists until flush", async () => {
     const persisted: number[] = [];

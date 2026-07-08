@@ -9,13 +9,6 @@ import { relativeTime } from "../util/time.js";
 
 export const VIEW_TYPE_SELFSYNC = "selfsync-view";
 
-/** Git actions to surface as buttons when Git backup is enabled (desktop). */
-export interface GitPanelActions {
-  commitNow: () => void;
-  pushNow: () => void;
-  fileHistory: () => void;
-}
-
 export class SelfSyncView extends ItemView {
   private unsubscribe?: () => void;
 
@@ -24,8 +17,6 @@ export class SelfSyncView extends ItemView {
     private readonly store: SyncStore,
     private readonly onSyncNow: () => void,
     private readonly onResolveConflict: (conflictPath: string) => void,
-    private readonly gitActions: () => GitPanelActions | null,
-    private readonly onTestConnection: () => Promise<{ ok: boolean; message: string }>,
     private readonly onOpenAdvanced: () => void,
   ) {
     super(leaf);
@@ -87,18 +78,6 @@ export class SelfSyncView extends ItemView {
     const sync = c.createDiv({ cls: "selfsync-section" });
     const syncBar = sync.createDiv({ cls: "selfsync-section-head" });
     syncBar.createEl("button", { text: "Sync now" }).onclick = () => this.onSyncNow();
-    const testBtn = syncBar.createEl("button", { text: "Test connection" });
-    testBtn.onclick = () => void this.runTest(testBtn);
-
-    const git = this.gitActions();
-    if (git) {
-      const gitSection = c.createDiv({ cls: "selfsync-section" });
-      gitSection.createEl("h4", { text: "Git backup" });
-      const bar = gitSection.createDiv({ cls: "selfsync-section-head" });
-      bar.createEl("button", { text: "Commit now" }).onclick = () => git.commitNow();
-      bar.createEl("button", { text: "Push now" }).onclick = () => git.pushNow();
-      bar.createEl("button", { text: "File history" }).onclick = () => git.fileHistory();
-    }
 
     const conflicts = c.createDiv({ cls: "selfsync-section" });
     conflicts.createEl("h4", { text: `Conflicts (${s.conflicts.length})` });
@@ -139,18 +118,6 @@ export class SelfSyncView extends ItemView {
     const ms = Date.parse(iso);
     if (Number.isNaN(ms)) return "never";
     return `${relativeTime(Math.floor(ms / 1000))} (${new Date(ms).toLocaleString()})`;
-  }
-
-  private async runTest(btn: HTMLButtonElement): Promise<void> {
-    btn.disabled = true;
-    btn.textContent = "Testing…";
-    try {
-      const res = await this.onTestConnection();
-      new Notice(`SelfSync: ${res.message}`);
-    } finally {
-      btn.disabled = false;
-      btn.textContent = "Test connection";
-    }
   }
 
   private formatLog(activity: SyncActivityEntry[]): string {
