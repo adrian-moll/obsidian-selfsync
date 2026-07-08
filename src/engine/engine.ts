@@ -71,6 +71,9 @@ export interface SyncResult {
   skippedLarge: string[];
 }
 
+/** Format a byte count as megabytes for diagnostic logs. */
+const mb = (bytes: number): string => (bytes / (1024 * 1024)).toFixed(1);
+
 /** Whether a vault path is a SelfSync conflict copy (e.g. `note (conflict …).md`). */
 export function isConflictCopy(path: string): boolean {
   return /\(conflict [^)]*\)/.test(path);
@@ -216,7 +219,7 @@ export class SyncEngine {
       // a fresh manifest below; any other error aborts the whole sync). Cloning
       // the whole manifest per chunk was O(N²) and a large-vault memory hog.
       const chunkMutations: Array<() => Promise<void>> = [];
-      for (const op of chunk) await this.applyOp(op, manifest, chunkMutations, outcomes);
+      for (const op of chunk) await this.applyOp(op, manifest, chunkMutations, outcomes, log);
 
       try {
         etag = await this.manifests.commit(manifest, etag);
@@ -266,17 +269,20 @@ export class SyncEngine {
     working: Manifest,
     stateMutations: Array<() => Promise<void>>,
     outcomes: Outcomes,
+    log: (msg: string) => void = () => {},
   ): Promise<void> {
     const { vault, backend, state } = this.deps;
 
     switch (op.kind) {
       case "upload": {
+        log(`upload ${op.path}`);
         const data = await vault.readBinary(op.path);
         const contentHash = await sha256(data);
         const st = await vault.stat(op.path);
         const size = st?.size ?? data.byteLength;
         const mtime = st?.mtime ?? 0;
         const blobKey = await this.deps.naming.blobKey(op.path);
+        log(`  ↳ read ${mb(size)} MB; writing`);
         await backend.write(blobKey, data);
         const version = nextVersion(working, op.path);
         working.entries[op.path] = { contentHash, version, blobKey, size, mtime, deleted: false };
@@ -287,6 +293,7 @@ export class SyncEngine {
 
       case "download": {
         const entry = working.entries[op.path];
+        log(`download ${op.path} (${mb(entry.size)} MB)`);
         const data = await backend.read(entry.blobKey);
         await vault.writeBinary(op.path, data);
         const st = await vault.stat(op.path);
@@ -305,6 +312,7 @@ export class SyncEngine {
       }
 
       case "deleteRemote": {
+        log(`deleteRemote ${op.path}`);
         const entry = working.entries[op.path];
         if (entry?.blobKey) await backend.remove(entry.blobKey).catch(() => {});
         tombstone(working, op.path);
@@ -314,6 +322,7 @@ export class SyncEngine {
       }
 
       case "deleteLocal": {
+        log(`deleteLocal ${op.path}`);
         await vault.remove(op.path);
         stateMutations.push(() => state.delete(op.path));
         stateMutations.push(() => this.forgetBase(op.path));
@@ -322,6 +331,7 @@ export class SyncEngine {
 
       case "conflict": {
         const entry = working.entries[op.path];
+        log(`conflict ${op.path} (remote ${mb(entry.size)} MB); reading remote+local`);
         const remoteData = await backend.read(entry.blobKey);
         const localData = await vault.readBinary(op.path);
 
@@ -393,6 +403,7 @@ export class SyncEngine {
       }
 
       case "move": {
+        log(`move ${op.from} -> ${op.to}`);
         const entry = working.entries[op.from];
         const st = await vault.stat(op.to);
         const newBlobKey = await this.deps.naming.blobKey(op.to);
