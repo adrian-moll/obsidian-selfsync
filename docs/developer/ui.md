@@ -33,6 +33,12 @@ Sections:
   count, and a **Git changes pending push** indicator when a push is outstanding.
 - **Actions** — **Sync now** and a **Test connection** button (runs the same
   WebDAV `testConnection()` used in settings and toasts the result).
+- **Advanced…** — opens the Advanced maintenance modal (`ui/advanced-modal.ts`), a
+  generic action launcher whose groups are built in `main.ts` (like `gitActions()`):
+  **Connections** (Test WebDAV / Test Git), **Git backup** (Commit / Push / Compact
+  history / File history — desktop + git.enabled only), and **Maintenance**
+  (**Clean up excluded files…** and **Reset sync state…**). The modal has no plugin
+  deps; each item's `run()` is wired by `main.ts`.
 - **Activity** — in-progress and queued operations; a scrolling recent-activity
   log (uploaded/downloaded/deleted/renamed, with timestamps).
 - **Errors** — last error with details and a **Retry** button.
@@ -72,6 +78,7 @@ The Git-backed history browser is a separate `ItemView`, gated by
 
 - **Sync now** — force a sync cycle.
 - **Open sync panel** — reveal the Sync view.
+- **Advanced…** — open the Advanced maintenance modal.
 - **Show file history** — open the file-history view for the active note (desktop).
 - **Show conflicts** — focus the Conflicts section.
 

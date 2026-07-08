@@ -180,3 +180,18 @@ textarea.selfsync-activity-log {
 .selfsync-error {
   color: var(--text-error, #f85149);
 }
+
+/* Advanced maintenance modal */
+.selfsync-advanced .selfsync-section {
+  margin-bottom: 0.75rem;
+}
+
+.selfsync-advanced-item {
+  margin-top: 0.35rem;
+}
+
+.selfsync-advanced-hint {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin: 0.1rem 0 0.2rem;
+}

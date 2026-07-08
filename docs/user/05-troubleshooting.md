@@ -86,6 +86,16 @@ syncs:
   retried automatically next sync. If the same file keeps failing, enable **Debug
   logging** and check `selfsync.log` for the `✗ <path>` line to see why.
 
+## The remote has leftover files I no longer sync (e.g. an old `.git` folder)
+
+If files that are now **excluded** were synced by an older version, their entries
+can linger in the remote index (and count toward "files synced") even after they
+stop syncing. Open the Sync panel → **Advanced… → Clean up excluded files…**. It
+shows a **preview** of exactly what it will remove (paths + size) before you
+confirm, then deletes those entries and blobs from the remote and drops them from
+this device's index. It only touches files that are **currently excluded on this
+device**, so review the preview if you use custom per-device exclude globs.
+
 ## Still stuck?
 
 Copy the Activity log (button in the SelfSync panel) and open an issue on the

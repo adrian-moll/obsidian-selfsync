@@ -19,6 +19,10 @@ first. Nothing here blocks normal sync.
 
 Recently resolved: **State DB storage (spike S3)** — the snapshot now lives in
 IndexedDB (only changed keys written per flush), with a JSON fallback (0.14.0).
+**Advanced maintenance panel + "clean up excluded files"** (0.15.0) — a Sync-panel
+button opens a modal gathering connection tests, git commit/push/compact, reset, and
+a dry-run-previewed purge of remote/state entries for now-excluded paths (fixes the
+leftover-`.git` cruft that bloated the manifest).
 
 ## Tech stack
 

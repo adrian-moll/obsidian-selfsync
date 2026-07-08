@@ -26,6 +26,7 @@ export class SelfSyncView extends ItemView {
     private readonly onResolveConflict: (conflictPath: string) => void,
     private readonly gitActions: () => GitPanelActions | null,
     private readonly onTestConnection: () => Promise<{ ok: boolean; message: string }>,
+    private readonly onOpenAdvanced: () => void,
   ) {
     super(leaf);
   }
@@ -127,6 +128,10 @@ export class SelfSyncView extends ItemView {
       log.readOnly = true;
       log.value = this.formatLog(s.activity);
     }
+
+    const footer = c.createDiv({ cls: "selfsync-section" });
+    const footBar = footer.createDiv({ cls: "selfsync-section-head" });
+    footBar.createEl("button", { text: "Advanced…" }).onclick = () => this.onOpenAdvanced();
   }
 
   private formatLastSync(iso: string | null): string {

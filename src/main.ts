@@ -13,6 +13,7 @@ import { SelfSyncView, VIEW_TYPE_SELFSYNC } from "./ui/sync-view.js";
 import { FileHistoryView, VIEW_TYPE_FILE_HISTORY } from "./ui/file-history-view.js";
 import { ConflictResolveModal } from "./ui/conflict-resolve-modal.js";
 import { ConfirmModal } from "./ui/confirm-modal.js";
+import { AdvancedModal, type AdvancedGroup } from "./ui/advanced-modal.js";
 import { Logger, createRotatingSink, type LogFileIO } from "./util/logger.js";
 import { canonicalPathOf } from "./engine/engine.js";
 import type { GitBackup } from "./git/git-backup.js";
@@ -23,6 +24,8 @@ import { ObsidianBaseStore } from "./vault/obsidian-base-store.js";
 import type { StateStore } from "./engine/state-db.js";
 import { createStateStore } from "./engine/indexeddb-state-store.js";
 import { SyncEngine } from "./engine/engine.js";
+import { ManifestStore } from "./engine/manifest-store.js";
+import { cleanupExcluded } from "./engine/cleanup.js";
 import { SyncScheduler } from "./engine/scheduler.js";
 import { MirrorNaming, OpaqueNaming } from "./engine/naming.js";
 import { DEFAULT_EXCLUDES, OBSIDIAN_CONFIG_GLOB, OBSIDIAN_VOLATILE, makeExcluder } from "./engine/exclude.js";
@@ -123,6 +126,7 @@ export default class SelfSyncPlugin extends Plugin {
                 }
               : null,
           () => this.testWebDavConnection(),
+          () => this.openAdvanced(),
         ),
     );
 
@@ -138,6 +142,7 @@ export default class SelfSyncPlugin extends Plugin {
 
     this.addCommand({ id: "open-panel", name: "Open sync panel", callback: () => void this.activateView() });
     this.addCommand({ id: "sync-now", name: "Sync now", callback: () => void this.scheduler.trigger("manual") });
+    this.addCommand({ id: "open-advanced", name: "Advanced…", callback: () => this.openAdvanced() });
     this.addCommand({
       id: "reset-sync-state",
       name: "Reset local sync state (re-index on next sync)",
@@ -637,6 +642,130 @@ export default class SelfSyncPlugin extends Plugin {
     this.store.update({ trackedFiles: 0 });
     this.logger.info("Local sync state reset — next sync re-indexes against the backend");
     new Notice("SelfSync: local sync state reset. Run 'Sync now' to re-index.");
+  }
+
+  /** Open the Advanced maintenance window (side-panel button + command). */
+  private openAdvanced(): void {
+    const groups: AdvancedGroup[] = [];
+
+    const connections = [
+      { label: "Test WebDAV connection", run: () => void this.testAndNotify(() => this.testWebDavConnection()) },
+    ];
+    if (Platform.isDesktopApp) {
+      connections.push({
+        label: "Test Git connection",
+        run: () => void this.testAndNotify(() => this.testGitConnection()),
+      });
+    }
+    groups.push({ title: "Connections", items: connections });
+
+    if (Platform.isDesktopApp && this.settings.git.enabled) {
+      groups.push({
+        title: "Git backup",
+        items: [
+          { label: "Commit now", run: () => void this.runGitBackup("manual") },
+          { label: "Push now", run: () => void this.runGitBackup("manual", true) },
+          { label: "Compact history…", run: () => this.confirmCompactHistory() },
+          { label: "File history", run: () => void this.activateFileHistory() },
+        ],
+      });
+    }
+
+    groups.push({
+      title: "Maintenance",
+      items: [
+        {
+          label: "Clean up excluded files…",
+          hint: "Remove leftover remote entries for files no longer synced (e.g. .git).",
+          run: () => void this.cleanupExcludedFiles(),
+        },
+        {
+          label: "Reset sync state…",
+          hint: "Clear the local index; the next sync re-indexes against the backend.",
+          danger: true,
+          run: () =>
+            new ConfirmModal(this.app, {
+              title: "Reset local sync state?",
+              body: "Clears this device's sync index. Nothing is deleted; the next sync re-indexes against the backend.",
+              confirmText: "Reset",
+              onConfirm: () => void this.resetSyncState(),
+            }).open(),
+        },
+      ],
+    });
+
+    new AdvancedModal(this.app, groups).open();
+  }
+
+  /** Run a connection test and surface the result as a Notice. */
+  private async testAndNotify(test: () => Promise<{ ok: boolean; message: string }>): Promise<void> {
+    const res = await test();
+    new Notice(`SelfSync: ${res.message}`);
+  }
+
+  /**
+   * Purge remote manifest entries, blobs, and local-state records for paths that are
+   * currently excluded from sync (e.g. a `.git/` repo synced by an older build before
+   * `.git/**` was excluded). Shows a dry-run preview before committing.
+   */
+  private async cleanupExcludedFiles(): Promise<void> {
+    if (this.store.get().status === "syncing") {
+      new Notice("SelfSync: a sync is in progress — try again in a moment.");
+      return;
+    }
+    const backend = this.buildBackend();
+    if (!backend) {
+      new Notice("SelfSync: configure the WebDAV backend first.");
+      return;
+    }
+    const naming = this.settings.encryptionEnabled ? new OpaqueNaming() : new MirrorNaming();
+    const exclude = makeExcluder(buildExcludePatterns(this.settings));
+    const manifests = new ManifestStore(backend, this.settings.deviceId, naming.manifestKey);
+    const log = (m: string): void => this.logger.debug(m);
+
+    let preview;
+    try {
+      preview = await cleanupExcluded({ manifests, backend, exclude, state: this.stateStore, dryRun: true, log });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.logger.error("Cleanup preview failed: " + msg);
+      new Notice("SelfSync: cleanup failed — " + msg);
+      return;
+    }
+    if (preview.count === 0) {
+      new Notice("SelfSync: nothing to clean up — no excluded files on the remote.");
+      return;
+    }
+
+    const mb = (preview.bytes / (1024 * 1024)).toFixed(1);
+    const sample = preview.paths.slice(0, 8).join("\n");
+    const more = preview.count > 8 ? `\n…and ${preview.count - 8} more` : "";
+    new ConfirmModal(this.app, {
+      title: "Clean up excluded files?",
+      body:
+        `Remove ${preview.count} entr${preview.count === 1 ? "y" : "ies"} (${mb} MB) from the remote index — ` +
+        `files currently excluded on THIS device:\n\n${sample}${more}`,
+      confirmText: "Remove",
+      onConfirm: () => void this.runCleanup(manifests, backend, exclude, log),
+    }).open();
+  }
+
+  private async runCleanup(
+    manifests: ManifestStore,
+    backend: StorageBackend,
+    exclude: (path: string) => boolean,
+    log: (msg: string) => void,
+  ): Promise<void> {
+    try {
+      const res = await cleanupExcluded({ manifests, backend, exclude, state: this.stateStore, dryRun: false, log });
+      this.logger.info(`Cleaned up ${res.count} excluded file(s) from the remote`);
+      new Notice(`SelfSync: removed ${res.count} excluded file(s) from the remote.`);
+      this.store.update({ trackedFiles: await this.countTrackedFiles() });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.logger.error("Cleanup failed: " + msg);
+      new Notice("SelfSync: cleanup failed — " + msg);
+    }
   }
 
   /**
