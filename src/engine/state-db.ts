@@ -13,6 +13,14 @@ export interface StateStore {
   delete(path: string): Promise<void>;
   /** Snapshot as a path→entry map (convenience for the reconciler). */
   toMap(): Promise<Map<string, StateEntry>>;
+  /**
+   * Defer persistence until {@link flush}. Between beginBatch() and flush(),
+   * put/delete only mutate memory and skip the (expensive) whole-DB persist,
+   * so a large batch serializes the DB once instead of once per entry. Stores
+   * that don't persist may treat these as no-ops.
+   */
+  beginBatch(): void;
+  flush(): Promise<void>;
 }
 
 /**
@@ -22,6 +30,8 @@ export interface StateStore {
  */
 export class JsonStateStore implements StateStore {
   private readonly entries: Map<string, StateEntry>;
+  /** When true, put/delete defer persistence until flush() (see beginBatch). */
+  private batching = false;
 
   constructor(
     initial: StateEntry[],
@@ -45,11 +55,21 @@ export class JsonStateStore implements StateStore {
 
   async put(entry: StateEntry): Promise<void> {
     this.entries.set(entry.path, { ...entry });
-    await this.persist(this.snapshot());
+    if (!this.batching) await this.persist(this.snapshot());
   }
 
   async delete(path: string): Promise<void> {
     this.entries.delete(path);
+    if (!this.batching) await this.persist(this.snapshot());
+  }
+
+  beginBatch(): void {
+    this.batching = true;
+  }
+
+  async flush(): Promise<void> {
+    if (!this.batching) return;
+    this.batching = false;
     await this.persist(this.snapshot());
   }
 
@@ -76,6 +96,14 @@ export class MemoryStateStore implements StateStore {
 
   async delete(path: string): Promise<void> {
     this.entries.delete(path);
+  }
+
+  beginBatch(): void {
+    // No persistence to defer.
+  }
+
+  async flush(): Promise<void> {
+    // No persistence to flush.
   }
 
   async toMap(): Promise<Map<string, StateEntry>> {

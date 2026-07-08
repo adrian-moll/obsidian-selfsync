@@ -15,7 +15,7 @@ import type { VaultAdapter } from "../vault/vault-adapter.js";
 import { ConditionalWriteError, type StorageBackend } from "../backend/storage-backend.js";
 import type { StateStore } from "./state-db.js";
 import { reconcile } from "./reconciler.js";
-import { cloneManifest, nextVersion, tombstone } from "./manifest.js";
+import { nextVersion, tombstone } from "./manifest.js";
 import { ManifestStore } from "./manifest-store.js";
 import type { BlobNaming } from "./naming.js";
 import type { BaseStore } from "./base-store.js";
@@ -43,6 +43,12 @@ export interface SyncOptions {
   exclude?: (path: string) => boolean;
   /** Called after each op executes, for progress display. */
   onProgress?: (done: number, total: number) => void;
+  /**
+   * Optional diagnostic sink for the sync phases (manifest load, vault scan,
+   * reconcile, per-chunk commit). The engine is otherwise silent, so without
+   * this a crash mid-sync leaves no trace of where it died.
+   */
+  log?: (msg: string) => void;
   /**
    * Skip files larger than this many bytes (local or remote). Reading a whole large
    * file into memory can OOM/crash Obsidian (notably on Android). 0/undefined = no
@@ -134,11 +140,13 @@ export class SyncEngine {
   async sync(opts: SyncOptions): Promise<SyncResult> {
     const exclude = opts.exclude ?? (() => false);
     const maxFileBytes = opts.maxFileBytes ?? 0;
+    const log = opts.log ?? (() => {});
 
     // Load the manifest first so oversized *remote* entries can be skipped too —
     // a download materializes the whole blob in memory and can OOM just like an
     // upload (the reported Android large-file crash).
     let { manifest, etag } = await this.manifests.load();
+    log(`manifest loaded: ${Object.keys(manifest.entries).length} entries`);
 
     const skipped = new Set<string>();
     if (maxFileBytes > 0) {
@@ -154,6 +162,7 @@ export class SyncEngine {
       maxFileBytes,
       (p) => skipped.add(p),
     );
+    log(`scanned vault: ${local.size} files, ${skipped.size} oversized skipped`);
     const existingConflicts = [...local.keys()].filter(isConflictCopy);
 
     // Oversized paths are hidden on ALL three sides (local/base/remote) so they are
@@ -176,6 +185,7 @@ export class SyncEngine {
     };
 
     let ops = await reconcileAgainst(manifest);
+    log(`reconciled: ${ops.length} ops`);
 
     const outcomes: Outcomes = { merged: [], conflictCopies: [] };
     const appliedOps: Op[] = [];
@@ -201,12 +211,15 @@ export class SyncEngine {
 
     while (ops.length > 0) {
       const chunk = ops.splice(0, CHUNK);
-      const working = cloneManifest(manifest);
+      // Apply ops directly to `manifest`: no code path reuses the pre-chunk
+      // manifest after a mutation (success reassigns nothing; a conflict reloads
+      // a fresh manifest below; any other error aborts the whole sync). Cloning
+      // the whole manifest per chunk was O(N²) and a large-vault memory hog.
       const chunkMutations: Array<() => Promise<void>> = [];
-      for (const op of chunk) await this.applyOp(op, working, chunkMutations, outcomes);
+      for (const op of chunk) await this.applyOp(op, manifest, chunkMutations, outcomes);
 
       try {
-        etag = await this.manifests.commit(working, etag);
+        etag = await this.manifests.commit(manifest, etag);
       } catch (err) {
         if (err instanceof ConditionalWriteError) {
           if (++conflictReloads > MAX_CONFLICT_RELOADS) return result(true);
@@ -222,11 +235,17 @@ export class SyncEngine {
         throw err;
       }
 
-      manifest = working;
+      // Persist the State DB once for the whole chunk instead of once per op —
+      // the per-op whole-DB serialization was the dominant O(N²) cost (and the
+      // large-vault Android OOM). Per-chunk granularity keeps the same crash
+      // safety: committed chunks are durable, an interrupted one re-runs.
+      this.deps.state.beginBatch();
       for (const mutate of chunkMutations) await mutate();
+      await this.deps.state.flush();
       appliedOps.push(...chunk);
       done += chunk.length;
       opts.onProgress?.(done, done + ops.length);
+      log(`committed chunk: ${done}/${done + ops.length}`);
     }
 
     return result(false);

@@ -537,6 +537,7 @@ export default class SelfSyncPlugin extends Plugin {
         exclude,
         onProgress,
         maxFileBytes,
+        log: (m) => this.logger.debug(m),
       });
       const nowIso = new Date().toISOString();
 
