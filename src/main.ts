@@ -542,14 +542,19 @@ export default class SelfSyncPlugin extends Plugin {
         naming,
         baseStore: new ObsidianBaseStore(this.app),
       });
+      // Throttle UI updates to ~10/s so the fine-grained per-file/per-scan-file
+      // callbacks below don't thrash the store; always let the final tick through.
       let lastProgressAt = 0;
-      const onProgress = (done: number, total: number) => {
+      const setDetail = (detail: string, force = false) => {
         const now = Date.now();
-        if (done === total || now - lastProgressAt > 200) {
+        if (force || now - lastProgressAt > 100) {
           lastProgressAt = now;
-          this.store.update({ status: "syncing", detail: `Syncing… ${done}/${total}` });
+          this.store.update({ status: "syncing", detail });
         }
       };
+      const onProgress = (done: number, total: number) =>
+        setDetail(`Syncing… ${done}/${total}`, done === total);
+      const onPhase = (detail: string) => setDetail(detail);
       // Cap only what we hold WHOLE in memory (uploads + non-streamed reads);
       // downloads stream in chunks regardless of size. On mobile, clamp to a safe
       // ceiling — a big file edited on the phone can't be chunk-uploaded (no ranged
@@ -564,6 +569,7 @@ export default class SelfSyncPlugin extends Plugin {
         useMtimeShortcut: true,
         exclude,
         onProgress,
+        onPhase,
         maxFileBytes,
         log: (m) => this.logger.debug(m),
       });

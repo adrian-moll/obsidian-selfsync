@@ -44,6 +44,13 @@ export interface SyncOptions {
   /** Called after each op executes, for progress display. */
   onProgress?: (done: number, total: number) => void;
   /**
+   * Called on phase transitions BEFORE the op loop (loading the remote index,
+   * scanning/hashing the vault, reconciling) — the phases that otherwise show a
+   * long, silent "Syncing…" on a large or heavily-changed vault. During the scan
+   * it reports a running file count. The caller should throttle UI updates.
+   */
+  onPhase?: (detail: string) => void;
+  /**
    * Optional diagnostic sink for the sync phases (manifest load, vault scan,
    * reconcile, per-chunk commit). The engine is otherwise silent, so without
    * this a crash mid-sync leaves no trace of where it died.
@@ -137,10 +144,15 @@ export async function scanVault(
   exclude: (path: string) => boolean = () => false,
   maxFileBytes = 0,
   onSkipLarge?: (path: string, size: number) => void,
+  onProgress?: (done: number, total: number) => void,
 ): Promise<Map<string, FileMeta>> {
   const paths = await vault.list();
   const out = new Map<string, FileMeta>();
+  const total = paths.length;
+  let done = 0;
   for (const path of paths) {
+    done++;
+    onProgress?.(done, total);
     if (exclude(path)) continue;
     const st = await vault.stat(path);
     if (!st) continue;
@@ -186,7 +198,9 @@ export class SyncEngine {
     const exclude = (p: string): boolean => p.startsWith(`${DOWNLOAD_STAGING_DIR}/`) || callerExclude(p);
     const maxFileBytes = opts.maxFileBytes ?? 0;
     const log = opts.log ?? (() => {});
+    const phase = opts.onPhase ?? (() => {});
 
+    phase("Loading remote index…");
     let { manifest, etag } = await this.manifests.load();
     log(`manifest loaded: ${Object.keys(manifest.entries).length} entries`);
 
@@ -197,12 +211,14 @@ export class SyncEngine {
     // land in `skipped`.
     const skipped = new Set<string>();
 
+    phase("Scanning vault…");
     const local = await scanVault(
       this.deps.vault,
       opts.useMtimeShortcut ? await this.deps.state.toMap() : undefined,
       exclude,
       maxFileBytes,
       (p) => skipped.add(p),
+      (d, t) => phase(`Scanning ${d}/${t}…`),
     );
     log(`scanned vault: ${local.size} files, ${skipped.size} oversized skipped`);
     const existingConflicts = [...local.keys()].filter(isConflictCopy);
@@ -226,6 +242,7 @@ export class SyncEngine {
       );
     };
 
+    phase("Reconciling…");
     let ops = await reconcileAgainst(manifest);
     log(`reconciled: ${ops.length} ops`);
 
@@ -320,7 +337,7 @@ export class SyncEngine {
       await this.deps.state.flush();
       appliedOps.push(...succeeded);
       done += chunk.length;
-      opts.onProgress?.(done, done + ops.length);
+      // (progress was already reported per-file in the loop above)
       log(`committed chunk: ${done}/${done + ops.length}`);
     }
 
