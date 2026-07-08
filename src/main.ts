@@ -356,6 +356,7 @@ export default class SelfSyncPlugin extends Plugin {
       authorName: g.authorName || undefined,
       authorEmail: g.authorEmail || undefined,
       excludeGlobs: g.excludeGlobs,
+      log: (m) => this.logger.debug("[git] " + m),
     });
     await backup.init();
     return backup;
@@ -455,6 +456,9 @@ export default class SelfSyncPlugin extends Plugin {
         } catch (e) {
           this.gitPushPending = true; // commits may remain unpushed; resume next cycle
           this.logPushError(e instanceof Error ? e.message : String(e), reason);
+          if (e instanceof Error) {
+            this.logger.debug(`[git] push error ${e.name}: ${e.stack ?? e.message}`);
+          }
         }
       } else if (res.commits > 0) {
         this.gitPushPending = canPush; // committed; push throttled/off

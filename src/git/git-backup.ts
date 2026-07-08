@@ -5,7 +5,7 @@
  * dynamically behind Platform.isDesktopApp). Never imported on mobile.
  */
 import git from "isomorphic-git";
-import http from "isomorphic-git/http/node";
+import nodeHttp from "isomorphic-git/http/node";
 import * as nodeFs from "fs";
 import * as path from "path";
 
@@ -25,6 +25,8 @@ export interface GitConfig {
   authorEmail?: string;
   /** Extra patterns to keep out of the backup (managed .gitignore block). */
   excludeGlobs?: string[];
+  /** Optional diagnostic sink (e.g. plugin debug log) for git HTTP + push phases. */
+  log?: (msg: string) => void;
 }
 
 // Markers delimiting the block of .gitignore SelfSync owns; content outside the
@@ -107,10 +109,10 @@ export class GitBackup {
   async testRemote(): Promise<void> {
     if (!this.cfg.remoteUrl) throw new Error("No Git remote configured");
     await git.getRemoteInfo2({
-      http,
+      http: this.http(),
       url: this.cfg.remoteUrl,
       forPush: true,
-      onAuth: () => ({ username: this.cfg.username || this.cfg.token || "", password: this.cfg.token || "" }),
+      onAuth: () => this.authCallback(),
     });
   }
 
@@ -210,13 +212,45 @@ export class GitBackup {
     return { username: this.cfg.username || this.cfg.token || "", password: this.cfg.token || "" };
   }
 
+  /**
+   * The isomorphic-git HTTP client, wrapped to log each request's method, path,
+   * status, and duration (and failures) when a diagnostic sink is provided — so a
+   * push timeout tells us WHICH request (ref advertisement GET vs pack POST) died
+   * and how long it took, instead of a bare "Request timed out".
+   */
+  private http(): typeof nodeHttp {
+    const log = this.cfg.log;
+    if (!log) return nodeHttp;
+    return {
+      request: async (req: Parameters<typeof nodeHttp.request>[0]) => {
+        const start = Date.now();
+        let where = req.url;
+        try {
+          const u = new URL(req.url);
+          where = u.pathname + u.search;
+        } catch {
+          /* keep full url */
+        }
+        try {
+          const res = await nodeHttp.request(req);
+          log(`http ${req.method} ${where} → ${res.statusCode} ${res.statusMessage} (${Date.now() - start}ms)`);
+          return res;
+        } catch (e) {
+          const err = e as { name?: string; message?: string; code?: string };
+          log(`http ${req.method} ${where} ✗ ${err?.name || "Error"} ${err?.code || ""}: ${err?.message} (${Date.now() - start}ms)`);
+          throw e;
+        }
+      },
+    };
+  }
+
   /** Push local HEAD to the remote branch. `force` replaces remote history (used
    *  by compaction). Routine backups use {@link pushIncremental} instead. */
   async push(force = false): Promise<void> {
     if (!this.cfg.remoteUrl) throw new Error("No Git remote configured");
     await git.push({
       fs: this.fs,
-      http,
+      http: this.http(),
       dir: this.cfg.dir,
       remote: "origin",
       ref: DEFAULT_BRANCH,
@@ -237,6 +271,8 @@ export class GitBackup {
   async pushIncremental(): Promise<{ pushed: number }> {
     if (!this.cfg.remoteUrl) throw new Error("No Git remote configured");
     const { dir } = this.cfg;
+    const log = this.cfg.log ?? (() => {});
+    const http = this.http();
     const onAuth = () => this.authCallback();
     const localHead = await git.resolveRef({ fs: this.fs, dir, ref: DEFAULT_BRANCH });
 
@@ -245,7 +281,8 @@ export class GitBackup {
     try {
       const refs = await git.listServerRefs({ http, url: this.cfg.remoteUrl, prefix: `refs/heads/${DEFAULT_BRANCH}`, onAuth });
       remoteOid = refs.find((r) => r.ref === `refs/heads/${DEFAULT_BRANCH}`)?.oid ?? null;
-    } catch {
+    } catch (e) {
+      log(`push: listServerRefs failed (${e instanceof Error ? e.message : String(e)}); assuming empty remote`);
       remoteOid = null;
     }
     if (remoteOid === localHead) return { pushed: 0 };
@@ -259,11 +296,18 @@ export class GitBackup {
       pending.push(e.oid);
     }
     pending.reverse();
+    log(
+      `push: HEAD ${localHead.slice(0, 7)}, remote ${remoteOid ? remoteOid.slice(0, 7) : "(none)"}, ` +
+        `${pending.length} commit(s) to push`,
+    );
 
     let pushed = 0;
     for (const oid of pending) {
+      const start = Date.now();
+      log(`push: sending commit ${pushed + 1}/${pending.length} (${oid.slice(0, 7)})…`);
       await git.push({ fs: this.fs, http, dir, remote: "origin", ref: oid, remoteRef: DEFAULT_BRANCH, onAuth });
       pushed++;
+      log(`push: commit ${pushed}/${pending.length} done (${Date.now() - start}ms)`);
     }
     return { pushed };
   }
