@@ -74,6 +74,15 @@ export interface SyncResult {
 /** Format a byte count as megabytes for diagnostic logs. */
 const mb = (bytes: number): string => (bytes / (1024 * 1024)).toFixed(1);
 
+/**
+ * Blobs larger than this are downloaded in ranged chunks and streamed to disk
+ * (append), instead of read whole. Reading/writing a whole large file — and, on
+ * mobile, base64-encoding it across the native bridge — can OOM/crash Obsidian
+ * (the reported Android large-file crash). 8 MiB keeps each transfer well within
+ * a phone's heap while limiting the number of round-trips.
+ */
+const DOWNLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
+
 /** Whether a vault path is a SelfSync conflict copy (e.g. `note (conflict …).md`). */
 export function isConflictCopy(path: string): boolean {
   return /\(conflict [^)]*\)/.test(path);
@@ -254,6 +263,48 @@ export class SyncEngine {
     return result(false);
   }
 
+  /**
+   * Download a blob into the vault. For blobs over {@link DOWNLOAD_CHUNK_BYTES}
+   * (when the backend supports ranged reads) the data is streamed to disk in
+   * chunks via appendBinary, so the whole file is never held in memory — this is
+   * what prevents the Android OOM on large downloads. Returns the full buffer for
+   * small single-shot reads (so a text base can be remembered), or null when the
+   * blob was streamed (large binaries need no base).
+   */
+  private async fetchBlobToVault(
+    path: string,
+    blobKey: string,
+    size: number,
+    log: (msg: string) => void,
+  ): Promise<ArrayBuffer | null> {
+    const { vault, backend } = this.deps;
+    if (size > DOWNLOAD_CHUNK_BYTES && backend.head && backend.readRange) {
+      const meta = await backend.head(blobKey).catch(() => null);
+      if (meta?.acceptRanges) {
+        const total = meta.size || size;
+        let offset = 0;
+        let first = true;
+        while (offset < total) {
+          const end = Math.min(offset + DOWNLOAD_CHUNK_BYTES, total) - 1;
+          const part = await backend.readRange(blobKey, offset, end);
+          if (first) {
+            await vault.writeBinary(path, part);
+            first = false;
+          } else {
+            await vault.appendBinary(path, part);
+          }
+          offset = end + 1;
+          log(`  ↳ streamed ${mb(offset)}/${mb(total)} MB`);
+        }
+        return null;
+      }
+      log(`  ↳ ranged read unavailable; falling back to whole-blob read`);
+    }
+    const data = await backend.read(blobKey);
+    await vault.writeBinary(path, data);
+    return data;
+  }
+
   /** Store the agreed content of a text file so future conflicts can 3-way merge. */
   private async rememberBase(path: string, data: ArrayBuffer): Promise<void> {
     if (this.deps.baseStore && isMergeableText(path)) await this.deps.baseStore.set(path, data);
@@ -294,8 +345,7 @@ export class SyncEngine {
       case "download": {
         const entry = working.entries[op.path];
         log(`download ${op.path} (${mb(entry.size)} MB)`);
-        const data = await backend.read(entry.blobKey);
-        await vault.writeBinary(op.path, data);
+        const data = await this.fetchBlobToVault(op.path, entry.blobKey, entry.size, log);
         const st = await vault.stat(op.path);
         stateMutations.push(() =>
           state.put({
@@ -307,7 +357,10 @@ export class SyncEngine {
             blobKey: entry.blobKey,
           }),
         );
-        stateMutations.push(() => this.rememberBase(op.path, data));
+        // `data` is null when the blob was streamed to disk in chunks (large
+        // files); those are binary, never mergeable text, so there's no base to
+        // remember. Small blobs return their buffer so text bases are kept.
+        if (data) stateMutations.push(() => this.rememberBase(op.path, data));
         break;
       }
 

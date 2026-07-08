@@ -40,6 +40,13 @@ export class ObsidianVaultAdapter implements VaultAdapter {
     await this.adapter.writeBinary(norm, data);
   }
 
+  async appendBinary(path: string, data: ArrayBuffer): Promise<void> {
+    const norm = normalizePath(path);
+    await this.ensureParentDir(norm);
+    // appendBinary is available since Obsidian 1.12.3 (our minAppVersion).
+    await this.adapter.appendBinary(norm, data);
+  }
+
   async remove(path: string): Promise<void> {
     const norm = normalizePath(path);
     await this.adapter.remove(norm);

@@ -38,6 +38,20 @@ export interface StorageBackend {
   /** Read a blob together with its etag, or null if the key does not exist. */
   readWithMeta(key: string): Promise<ReadResult | null>;
   /**
+   * Metadata for a blob without downloading it: total size, and whether the
+   * backend/server honors byte-range GETs. Absence (undefined method or null
+   * result) tells the engine chunked reads aren't available. Optional so backends
+   * that can't do it simply omit it.
+   */
+  head?(key: string): Promise<{ size: number; acceptRanges: boolean } | null>;
+  /**
+   * Read the byte range [start, endInclusive]. Only called after {@link head}
+   * reports acceptRanges, so implementations may assume range support (throw
+   * otherwise). Enables streaming large downloads without buffering the whole
+   * blob — the mobile large-file OOM fix.
+   */
+  readRange?(key: string, start: number, endInclusive: number): Promise<ArrayBuffer>;
+  /**
    * Store a blob. If `prevEtag` is provided and the backend supports conditional
    * writes, the write MUST fail (throw ConditionalWriteError) if the current
    * etag differs. Returns the new etag.
@@ -87,6 +101,17 @@ export class MemoryBackend implements StorageBackend {
   async readWithMeta(key: string): Promise<ReadResult | null> {
     const b = this.blobs.get(key);
     return b ? { data: b.data.slice(0), etag: b.etag } : null;
+  }
+
+  async head(key: string): Promise<{ size: number; acceptRanges: boolean } | null> {
+    const b = this.blobs.get(key);
+    return b ? { size: b.data.byteLength, acceptRanges: true } : null;
+  }
+
+  async readRange(key: string, start: number, endInclusive: number): Promise<ArrayBuffer> {
+    const b = this.blobs.get(key);
+    if (!b) throw new Error(`Not found: ${key}`);
+    return b.data.slice(start, endInclusive + 1);
   }
 
   async write(key: string, data: ArrayBuffer, prevEtag?: string): Promise<string> {

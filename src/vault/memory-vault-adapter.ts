@@ -33,6 +33,18 @@ export class MemoryVaultAdapter implements VaultAdapter {
     this.files.set(path, { data: data.slice(0), mtime: this.tick() });
   }
 
+  async appendBinary(path: string, data: ArrayBuffer): Promise<void> {
+    const existing = this.files.get(path);
+    if (!existing) {
+      this.files.set(path, { data: data.slice(0), mtime: this.tick() });
+      return;
+    }
+    const merged = new Uint8Array(existing.data.byteLength + data.byteLength);
+    merged.set(new Uint8Array(existing.data), 0);
+    merged.set(new Uint8Array(data), existing.data.byteLength);
+    this.files.set(path, { data: merged.buffer, mtime: this.tick() });
+  }
+
   async remove(path: string): Promise<void> {
     this.files.delete(path);
   }

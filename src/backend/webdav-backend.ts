@@ -216,6 +216,38 @@ export class WebDavBackend implements StorageBackend {
     return { data: res.body, etag };
   }
 
+  async head(key: string): Promise<{ size: number; acceptRanges: boolean } | null> {
+    const res = await this.opts.http({ method: "HEAD", url: this.urlFor(key), headers: this.headers() });
+    if (res.status === 404) return null;
+    if (res.status < 200 || res.status >= 300) {
+      throw new Error(`WebDAV HEAD ${key} failed: HTTP ${res.status}`);
+    }
+    const len = Number(res.headers["content-length"] ?? "0") || 0;
+    // Servers advertise range support via `Accept-Ranges: bytes`. Some omit it on
+    // HEAD but still honor Range on GET; we treat an explicit "none" as no support
+    // and anything else (bytes / absent) as worth attempting — readRange validates
+    // with a 206 check and the engine falls back safely if it isn't.
+    const accept = (res.headers["accept-ranges"] ?? "").toLowerCase();
+    return { size: len, acceptRanges: accept !== "none" };
+  }
+
+  async readRange(key: string, start: number, endInclusive: number): Promise<ArrayBuffer> {
+    const res = await this.opts.http({
+      method: "GET",
+      url: this.urlFor(key),
+      headers: this.headers({ Range: `bytes=${start}-${endInclusive}` }),
+    });
+    // 206 = the server honored the range. A 200 means it ignored Range and sent the
+    // whole blob — refuse it so we never buffer a huge body (the very OOM we avoid).
+    if (res.status === 200) {
+      throw new Error(`WebDAV range GET ${key} not honored (HTTP 200); server lacks range support`);
+    }
+    if (res.status !== 206) {
+      throw new Error(`WebDAV range GET ${key} failed: HTTP ${res.status}`);
+    }
+    return res.body;
+  }
+
   async write(key: string, data: ArrayBuffer, prevEtag?: string): Promise<string> {
     await this.ensureParents(key);
     const extra: Record<string, string> = { "Content-Type": "application/octet-stream" };
