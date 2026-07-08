@@ -1,6 +1,6 @@
 {
   "name": "obsidian-selfsync",
-  "version": "0.17.2",
+  "version": "0.17.3",
   "description": "Self-hosted, bring-your-own-backend sync and backup for Obsidian.",
   "main": "main.js",
   "type": "module",

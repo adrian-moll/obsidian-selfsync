@@ -20,6 +20,7 @@ import { ManifestStore } from "./manifest-store.js";
 import type { BlobNaming } from "./naming.js";
 import type { BaseStore } from "./base-store.js";
 import { isMergeableText, mergeText } from "./merge.js";
+import { isEnabledPluginList, isObsidianConfig, mergeEnabledLists } from "./config-merge.js";
 import { sha256 } from "../util/hash.js";
 import { utf8 } from "../backend/http.js";
 
@@ -563,6 +564,14 @@ export class SyncEngine {
           }
         }
 
+        // `.obsidian` config is settings, not documents — auto-resolve instead of
+        // keeping both (D3 config amendment). Enabled-plugin lists union-merge;
+        // any other config file takes the newest side. No conflict copy either way.
+        if (isObsidianConfig(op.path)) {
+          await this.resolveConfigConflict(op.path, entry, localData, remoteData, working, stateMutations, outcomes, log);
+          break;
+        }
+
         // Keep both: remote becomes canonical, local saved as a conflict copy.
         await vault.writeBinary(op.conflictCopyPath, localData);
         await vault.writeBinary(op.path, remoteData);
@@ -639,5 +648,77 @@ export class SyncEngine {
         break;
       }
     }
+  }
+
+  /**
+   * Resolve a conflict on an `.obsidian` config file WITHOUT a keep-both copy.
+   * Enabled-plugin lists union-merge (both devices' plugins stay enabled); any
+   * other config file takes the newest side by mtime. Both outcomes update the
+   * manifest + State DB and are reported as `merged` (no conflict copy).
+   */
+  private async resolveConfigConflict(
+    path: string,
+    entry: ManifestEntry,
+    localData: ArrayBuffer,
+    remoteData: ArrayBuffer,
+    working: Manifest,
+    stateMutations: Array<() => Promise<void>>,
+    outcomes: Outcomes,
+    log: (msg: string) => void,
+  ): Promise<void> {
+    const { vault, backend, state } = this.deps;
+
+    // 1) Enabled-plugin lists → union merge (combine both devices' plugins).
+    if (isEnabledPluginList(path)) {
+      const merged = mergeEnabledLists(utf8.decode(localData), utf8.decode(remoteData));
+      if (merged !== null) {
+        const buf = utf8.encode(merged);
+        await vault.writeBinary(path, buf);
+        const contentHash = await sha256(buf);
+        const st = await vault.stat(path);
+        const size = st?.size ?? buf.byteLength;
+        const mtime = st?.mtime ?? 0;
+        const blobKey = await this.deps.naming.blobKey(path);
+        await backend.write(blobKey, buf);
+        const version = nextVersion(working, path);
+        working.entries[path] = { contentHash, version, blobKey, size, mtime, deleted: false };
+        stateMutations.push(() => state.put({ path, contentHash, size, mtime, version, blobKey }));
+        outcomes.merged.push(path);
+        log(`  ↳ merged plugin list (union)`);
+        return;
+      }
+      // couldn't parse → fall through to newest-wins
+    }
+
+    // 2) Any other .obsidian config → newest-wins by mtime (no conflict copy).
+    const st = await vault.stat(path);
+    const localMtime = st?.mtime ?? 0;
+    if (localMtime > (entry.mtime ?? 0)) {
+      // Local is newer → publish it, overwriting the remote copy.
+      const contentHash = await sha256(localData);
+      const size = st?.size ?? localData.byteLength;
+      const blobKey = await this.deps.naming.blobKey(path);
+      await backend.write(blobKey, localData);
+      const version = nextVersion(working, path);
+      working.entries[path] = { contentHash, version, blobKey, size, mtime: localMtime, deleted: false };
+      stateMutations.push(() => state.put({ path, contentHash, size, mtime: localMtime, version, blobKey }));
+      log(`  ↳ config newest-wins: kept local`);
+    } else {
+      // Remote is newer (or the same) → adopt it locally.
+      await vault.writeBinary(path, remoteData);
+      const st2 = await vault.stat(path);
+      stateMutations.push(() =>
+        state.put({
+          path,
+          contentHash: entry.contentHash,
+          size: entry.size,
+          mtime: st2?.mtime ?? entry.mtime,
+          version: entry.version,
+          blobKey: entry.blobKey,
+        }),
+      );
+      log(`  ↳ config newest-wins: took remote`);
+    }
+    outcomes.merged.push(path);
   }
 }

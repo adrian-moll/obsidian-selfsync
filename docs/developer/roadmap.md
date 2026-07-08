@@ -16,7 +16,12 @@ first. Nothing here blocks normal sync.
 - **Passphrase rotation** — re-encrypting an existing E2EE backend under a new
   passphrase is not yet a built-in action (see **M3** / `encryption.md`).
 
-Recently resolved: **Nested `rootDir` on kDrive** — a sync folder with a `/` in it
+Recently resolved: **`.obsidian` config conflicts auto-resolve** — config files no
+longer produce keep-both copies: the enabled-plugin lists
+(`community-plugins.json` / `core-plugins.json`) union-merge and any other config
+file takes the newest side (`config-merge.ts`, wired into the engine's conflict
+handler; notes are unaffected). Fixes the noisy conflict copies when onboarding a
+second device with plugin sync on. **Nested `rootDir` on kDrive** — a sync folder with a `/` in it
 (e.g. `Obsidian/ThisIsMyWay`) failed with `MKCOL … 404`: `rootUrl` mangled the `/`
 into `%2F` and `ensureRoot` tried to create the nested collection in one MKCOL
 without its parent. Now `rootDir` is encoded per-segment and each ancestor is

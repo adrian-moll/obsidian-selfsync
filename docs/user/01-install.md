@@ -46,6 +46,11 @@ parts local:
 - **Workspace layout** and **cache** are never synced (Obsidian rewrites them per
   device).
 
+Config files never produce conflict copies (unlike notes): your enabled-plugin
+lists (`community-plugins.json` / `core-plugins.json`) are **merged** so plugins
+from both devices stay enabled, and any other config file just takes the
+most-recently-saved version.
+
 If a specific plugin keeps per-device state somewhere other than `data.json`, add
 that path to **Extra exclude patterns**.
 

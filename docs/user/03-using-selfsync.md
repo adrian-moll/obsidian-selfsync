@@ -47,6 +47,10 @@ Edit the same note on two devices and SelfSync protects both versions:
 - If they **overlap** (or the file isn't text), SelfSync keeps **both** versions:
   your file plus a **conflict copy**, so nothing is lost.
 
+> `.obsidian` **config** files are the exception — they're settings, not documents,
+> so they never make conflict copies. Enabled-plugin lists merge (plugins from both
+> devices stay on); other config files take the newest version.
+
 To resolve a conflict copy:
 
 1. Open the **Conflicts** section in the SelfSync panel — each entry shows the
