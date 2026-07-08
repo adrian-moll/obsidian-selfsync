@@ -28,10 +28,12 @@ import { ManifestStore } from "./engine/manifest-store.js";
 import { cleanupExcluded } from "./engine/cleanup.js";
 import { SyncScheduler } from "./engine/scheduler.js";
 import { type BlobNaming, MirrorNaming, OpaqueNaming } from "./engine/naming.js";
-import { DEFAULT_EXCLUDES, OBSIDIAN_CONFIG_GLOB, OBSIDIAN_VOLATILE, makeExcluder } from "./engine/exclude.js";
+import { buildExcludePatterns, makeExcluder } from "./engine/exclude.js";
 import { WebDavBackend } from "./backend/webdav-backend.js";
 import { CryptoBackend } from "./backend/crypto-backend.js";
-import { MissingPassphraseError, unlock, WrongPassphraseError } from "./backend/crypto-header.js";
+import { loadCryptoHeader, MissingPassphraseError, unlock, WrongPassphraseError } from "./backend/crypto-header.js";
+import { applyImportedConfig, buildExportConfig } from "./backend/config-store.js";
+import { utf8 } from "./backend/http.js";
 import { obsidianHttp } from "./backend/obsidian-http.js";
 import type { StorageBackend } from "./backend/storage-backend.js";
 import { decodeSecret, encodeSecret, type KeychainProvider } from "./util/secret-store.js";
@@ -77,14 +79,6 @@ function summarizeOps(ops: Op[]): string {
   const shown = ops.slice(0, 6).map(describeOp);
   const extra = ops.length > shown.length ? ` (+${ops.length - shown.length} more)` : "";
   return shown.join(", ") + extra;
-}
-
-function buildExcludePatterns(settings: SelfSyncSettings): string[] {
-  const patterns = [...DEFAULT_EXCLUDES];
-  if (settings.syncObsidianConfig) patterns.push(...OBSIDIAN_VOLATILE);
-  else patterns.push(OBSIDIAN_CONFIG_GLOB);
-  patterns.push(...settings.excludeGlobs);
-  return patterns;
 }
 
 export default class SelfSyncPlugin extends Plugin {
@@ -141,6 +135,16 @@ export default class SelfSyncPlugin extends Plugin {
       name: "Reset local sync state (re-index on next sync)",
       callback: () => void this.resetSyncState(),
     });
+    this.addCommand({
+      id: "export-config",
+      name: "Export config to backend",
+      callback: () => void this.exportConfigToBackend(),
+    });
+    this.addCommand({
+      id: "import-config",
+      name: "Import config from backend",
+      callback: () => void this.importConfigFromBackend({ auto: false }),
+    });
 
     this.addSettingTab(new SelfSyncSettingTab(this.app, this));
 
@@ -192,8 +196,12 @@ export default class SelfSyncPlugin extends Plugin {
   }
 
   private setupTriggers(): void {
-    // Startup reconcile — the backbone (NFR1).
-    if (this.settings.syncOnStartup) void this.scheduler.trigger("startup");
+    // On a freshly-connected device, offer to adopt the shared config stored on the
+    // backend BEFORE the first file sync, then start the startup reconcile (NFR1).
+    void (async () => {
+      await this.maybeOfferBackendConfig();
+      if (this.settings.syncOnStartup) void this.scheduler.trigger("startup");
+    })();
 
     // Periodic interval.
     if (this.settings.syncIntervalMinutes > 0) {
@@ -721,7 +729,146 @@ export default class SelfSyncPlugin extends Plugin {
       ],
     });
 
+    groups.push({
+      title: "Setup (share config across devices)",
+      items: [
+        {
+          label: "Export config to backend",
+          hint: "Publish this device's non-secret settings so a new device can adopt them. Excludes passwords/passphrase/token.",
+          run: () => void this.exportConfigToBackend(),
+        },
+        {
+          label: "Import config from backend",
+          hint: "Replace this device's settings with the shared config stored on the backend (keeps your own secrets).",
+          run: () => void this.importConfigFromBackend({ auto: false }),
+        },
+      ],
+    });
+
     new AdvancedModal(this.app, groups).open();
+  }
+
+  // --- shared config (bootstrap a new device) --------------------------------
+
+  /** Publish this device's non-secret settings as a blob on the backend. */
+  private async exportConfigToBackend(): Promise<void> {
+    const raw = this.buildBackend();
+    if (!raw) {
+      new Notice("SelfSync: configure the WebDAV backend first.");
+      return;
+    }
+    try {
+      // Use the same effective backend + layout as a normal sync, so the config
+      // blob is encrypted when E2EE is on (host sees only ciphertext).
+      const { backend, naming } = await this.encryptedContext(raw);
+      const json = JSON.stringify(buildExportConfig(this.settings), null, 2);
+      await backend.write(naming.configKey, utf8.encode(json));
+      this.logger.info("Exported config to backend");
+      new Notice("SelfSync: config exported to the backend.");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.logger.warn("Export config failed: " + msg);
+      new Notice("SelfSync: couldn't export config — " + msg);
+    }
+  }
+
+  /**
+   * Resolve the backend to read the shared config from, based on the BACKEND's
+   * state (not this device's encryption setting) — a new device may not have E2EE
+   * enabled locally yet. Returns an error string when the backend is encrypted but
+   * no passphrase is set here.
+   */
+  private async backendForConfigRead(
+    raw: StorageBackend,
+  ): Promise<{ backend: StorageBackend; configKey: string } | { error: string }> {
+    const header = await loadCryptoHeader(raw);
+    if (header) {
+      if (!this.settings.encryptionPassphrase) {
+        return { error: "This backend is encrypted — set your passphrase in settings, then Import config from backend." };
+      }
+      const { key, chunkSize } = await unlock(raw, this.settings.encryptionPassphrase); // verifies the passphrase
+      return { backend: new CryptoBackend(raw, key, chunkSize), configKey: new OpaqueNaming().configKey };
+    }
+    return { backend: raw, configKey: new MirrorNaming().configKey };
+  }
+
+  /**
+   * Read the shared config from the backend and (after a confirm) apply it to this
+   * device, preserving local secrets + deviceId. `auto` suppresses the "nothing to
+   * import" notices for the silent first-connect offer. Resolves only after the
+   * user has decided, so the caller can gate the first sync on it.
+   */
+  private async importConfigFromBackend(opts: { auto: boolean }): Promise<void> {
+    const raw = this.buildBackend();
+    if (!raw) {
+      if (!opts.auto) new Notice("SelfSync: configure the WebDAV backend first.");
+      return;
+    }
+    let resolved: { backend: StorageBackend; configKey: string } | { error: string };
+    try {
+      resolved = await this.backendForConfigRead(raw);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.logger.warn("Import config (resolve) failed: " + msg);
+      if (!opts.auto) new Notice("SelfSync: " + msg);
+      return;
+    }
+    if ("error" in resolved) {
+      if (!opts.auto) new Notice("SelfSync: " + resolved.error);
+      return;
+    }
+
+    const res = await resolved.backend.readWithMeta(resolved.configKey).catch(() => null);
+    if (!res) {
+      if (!opts.auto) new Notice("SelfSync: no saved config found on this backend.");
+      return;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(utf8.decode(res.data));
+    } catch {
+      if (!opts.auto) new Notice("SelfSync: the saved config on the backend is unreadable.");
+      return;
+    }
+
+    await new Promise<void>((resolve) => {
+      new ConfirmModal(this.app, {
+        title: "Import SelfSync settings?",
+        body:
+          "Import saved settings from this backend? This replaces your current SelfSync settings on this " +
+          "device, except your WebDAV password, encryption passphrase, and Git token.",
+        confirmText: "Import",
+        onConfirm: () => void this.applyImportedConfigAndSave(parsed).finally(resolve),
+        onCancel: () => resolve(),
+      }).open();
+    });
+  }
+
+  private async applyImportedConfigAndSave(parsed: unknown): Promise<void> {
+    try {
+      this.settings = applyImportedConfig(this.settings, parsed);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      new Notice("SelfSync: couldn't import config — " + msg);
+      return;
+    }
+    await this.saveSettings();
+    this.logger.info("Imported config from backend");
+    const needPass = this.settings.encryptionEnabled ? " and encryption passphrase" : "";
+    new Notice(`SelfSync: config imported. Enter your WebDAV password${needPass} to finish setup.`);
+  }
+
+  /**
+   * Once per device, if connected but not yet checked, offer to import the shared
+   * config from the backend before the first sync. Marks the device checked up
+   * front so a dismissed offer isn't repeated every launch (the manual Import
+   * action stays available).
+   */
+  async maybeOfferBackendConfig(): Promise<void> {
+    if (this.settings.bootstrapConfigChecked || !this.settings.webdav.url) return;
+    this.settings.bootstrapConfigChecked = true;
+    await this.savePersisted();
+    await this.importConfigFromBackend({ auto: true });
   }
 
   /** Run a connection test and surface the result as a Notice. */

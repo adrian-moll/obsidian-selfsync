@@ -45,8 +45,12 @@ Copy `main.js`, `manifest.json`, and `styles.css` from the
 `<vault>/.obsidian/plugins/selfsync/`, then enable the plugin.
 </details>
 
-> Note: `.obsidian` config sync is **off by default** (it churns across devices).
-> Notes and attachments sync; enable config sync in settings if you want it.
+> Note: `.obsidian` config sync is **off by default**. Turn it on to sync your
+> appearance, hotkeys, snippets, themes, and **installed plugins** across devices;
+> each plugin's own settings (and workspace/cache) stay local, so device-specific
+> state and secrets never leave the device. To set up a new device fast, **Advanced
+> → Export config to backend** on a configured device, then the new device offers to
+> import it on first connect (secrets are never exported — you enter those once).
 
 ## Documentation
 

@@ -2,6 +2,8 @@
 import { App, Modal, Setting } from "obsidian";
 
 export class ConfirmModal extends Modal {
+  private confirmed = false;
+
   constructor(
     app: App,
     private readonly opts: {
@@ -9,6 +11,8 @@ export class ConfirmModal extends Modal {
       body: string;
       confirmText: string;
       onConfirm: () => void;
+      /** Called if the modal is dismissed without confirming (Cancel or close). */
+      onCancel?: () => void;
     },
   ) {
     super(app);
@@ -25,6 +29,8 @@ export class ConfirmModal extends Modal {
           .setButtonText(this.opts.confirmText)
           .setWarning()
           .onClick(() => {
+            // Mark BEFORE close() so onClose() doesn't fire onCancel for a confirm.
+            this.confirmed = true;
             this.close();
             this.opts.onConfirm();
           }),
@@ -33,5 +39,6 @@ export class ConfirmModal extends Modal {
 
   onClose(): void {
     this.contentEl.empty();
+    if (!this.confirmed) this.opts.onCancel?.();
   }
 }

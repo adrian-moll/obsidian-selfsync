@@ -16,11 +16,19 @@ first. Nothing here blocks normal sync.
 - **Passphrase rotation** — re-encrypting an existing E2EE backend under a new
   passphrase is not yet a built-in action (see **M3** / `encryption.md`).
 
-Recently resolved: **End-to-end encryption (M3)** — content and paths are now
-encrypted on-device (AES-256-GCM, PBKDF2 key, framed streaming blobs, wrong-
-passphrase verifier); see **M3** below. **State DB storage (spike S3)** — the
-snapshot now lives in IndexedDB (only changed keys written per flush), with a JSON
-fallback (0.14.0).
+Recently resolved: **Config portability** — with config sync on, `.obsidian` now
+syncs the portable config **and plugin code** (manifest/main.js/styles.css) so
+plugins follow across devices, while each plugin's `data.json` (settings/secrets),
+workspace, and cache stay device-local (`OBSIDIAN_CONFIG_EXCLUDES` in `exclude.ts`).
+Plus a **backend-stored shared config** (`config-store.ts`, `BlobNaming.configKey`):
+**Export config to backend** publishes non-secret settings; a new device
+auto-detects and offers to import them on first connect (and a manual **Import
+config from backend**), encrypted alongside everything else when E2EE is on. Secrets
+(password/passphrase/token) and `deviceId` never leave the device.
+**End-to-end encryption (M3)** — content and paths are now encrypted on-device
+(AES-256-GCM, PBKDF2 key, framed streaming blobs, wrong-passphrase verifier); see
+**M3** below. **State DB storage (spike S3)** — the snapshot now lives in IndexedDB
+(only changed keys written per flush), with a JSON fallback (0.14.0).
 **Advanced maintenance panel + "clean up excluded files"** (0.15.0) — a Sync-panel
 button opens a modal gathering connection tests, git commit/push/compact, reset, and
 a dry-run-previewed purge of remote/state entries for now-excluded paths (fixes the

@@ -6,6 +6,7 @@ describe("BlobNaming", () => {
     const n = new MirrorNaming();
     expect(await n.blobKey("Notes/todo.md")).toBe("Notes/todo.md");
     expect(n.manifestKey).toBe(".selfsync/manifest.json");
+    expect(n.configKey).toBe(".selfsync/config.json");
   });
 
   it("opaque: blobKey is a stable opaque hash; manifest at root", async () => {
@@ -16,5 +17,6 @@ describe("BlobNaming", () => {
     expect(k1).toBe(k2); // deterministic
     expect(await n.blobKey("Other.md")).not.toBe(k1);
     expect(n.manifestKey).toBe("manifest.json");
+    expect(n.configKey).toBe("config.json");
   });
 });

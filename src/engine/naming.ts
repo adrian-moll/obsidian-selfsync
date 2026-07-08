@@ -15,6 +15,12 @@ import { utf8 } from "../backend/http.js";
 export interface BlobNaming {
   /** Backend key of the manifest object. */
   readonly manifestKey: string;
+  /**
+   * Backend key of the shared (non-secret) SelfSync config blob used to bootstrap
+   * a new device. Not a vault path and not in the manifest, so reconciliation and
+   * cleanup ignore it — like the manifest and crypto header.
+   */
+  readonly configKey: string;
   /** Map a logical vault path to its backend blob key. */
   blobKey(path: string): Promise<string>;
 }
@@ -22,6 +28,7 @@ export interface BlobNaming {
 /** Browsable layout: files stored at their real vault paths. */
 export class MirrorNaming implements BlobNaming {
   readonly manifestKey = ".selfsync/manifest.json";
+  readonly configKey = ".selfsync/config.json";
   async blobKey(path: string): Promise<string> {
     return path;
   }
@@ -30,6 +37,7 @@ export class MirrorNaming implements BlobNaming {
 /** Private layout: opaque, content-independent keys derived from the path. */
 export class OpaqueNaming implements BlobNaming {
   readonly manifestKey = "manifest.json";
+  readonly configKey = "config.json";
   async blobKey(path: string): Promise<string> {
     return "b-" + (await sha256(utf8.encode(path)));
   }

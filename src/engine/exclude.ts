@@ -18,13 +18,25 @@ export const DEFAULT_EXCLUDES: string[] = [
 export const OBSIDIAN_CONFIG_GLOB = ".obsidian/**";
 
 /**
- * Volatile config files that must stay excluded even when the user opts to sync
- * `.obsidian` — Obsidian rewrites these per device on load, causing sync churn.
+ * Kept excluded even when the user opts to sync `.obsidian`, so that config sync
+ * carries the portable stuff (appearance, hotkeys, snippets, themes, and each
+ * plugin's CODE — manifest/main.js/styles.css — so plugins install & enable on a
+ * new device) but NOT the device-specific parts:
+ *   - workspace files: Obsidian rewrites these per device → sync churn.
+ *   - cache: device-local search/index cache.
+ *   - plugins/<id>/data.json: each plugin's SETTINGS + per-device state, often
+ *     including secrets. Excluding it avoids conflict copies inside plugin folders
+ *     and plaintext secret upload; each device keeps its own plugin settings, and a
+ *     plugin migrates its own local data on update (the normal upgrade path). A
+ *     plugin that stores per-device state outside data.json can be added to the
+ *     user's Extra exclude patterns.
  */
-export const OBSIDIAN_VOLATILE: string[] = [
+export const OBSIDIAN_CONFIG_EXCLUDES: string[] = [
   ".obsidian/workspace.json",
   ".obsidian/workspace-mobile.json",
   ".obsidian/workspace",
+  ".obsidian/cache",
+  ".obsidian/plugins/*/data.json",
 ];
 
 /** Convert a simple glob to a RegExp. `**` matches across `/`; `*` within a segment. */
@@ -58,4 +70,21 @@ export function globToRegExp(glob: string): RegExp {
 export function makeExcluder(patterns: string[]): (path: string) => boolean {
   const regexps = patterns.filter((p) => p.trim().length > 0).map(globToRegExp);
   return (path: string) => regexps.some((r) => r.test(path));
+}
+
+/**
+ * Assemble the full exclude glob list for a sync from the user's settings:
+ * always-on defaults, then either the whole `.obsidian` folder (config sync off)
+ * or just the device-specific bits (config sync on), then the user's extra globs.
+ * Pure (no Obsidian import) so it's unit-tested directly.
+ */
+export function buildExcludePatterns(settings: {
+  syncObsidianConfig: boolean;
+  excludeGlobs: string[];
+}): string[] {
+  const patterns = [...DEFAULT_EXCLUDES];
+  if (settings.syncObsidianConfig) patterns.push(...OBSIDIAN_CONFIG_EXCLUDES);
+  else patterns.push(OBSIDIAN_CONFIG_GLOB);
+  patterns.push(...settings.excludeGlobs);
+  return patterns;
 }

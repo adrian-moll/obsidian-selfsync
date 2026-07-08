@@ -50,6 +50,12 @@ export interface SelfSyncSettings {
   git: GitSettings;
   /** Stable per-device id, generated on first load. */
   deviceId: string;
+  /**
+   * Whether this device has already been offered the shared config stored on the
+   * backend (bootstrap). Set once (imported or declined) so the offer isn't
+   * repeated every launch; the manual "Import config from backend" ignores it.
+   */
+  bootstrapConfigChecked: boolean;
 }
 
 export const DEFAULT_SETTINGS: SelfSyncSettings = {
@@ -77,6 +83,7 @@ export const DEFAULT_SETTINGS: SelfSyncSettings = {
     excludeGlobs: [],
   },
   deviceId: "",
+  bootstrapConfigChecked: false,
 };
 
 /**
@@ -275,9 +282,12 @@ export class SelfSyncSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Sync Obsidian config folder (.obsidian)")
       .setDesc(
-        "Off (recommended): only notes and attachments sync. On: also sync .obsidian " +
-          "(themes, plugin settings) — but Obsidian rewrites some config files per device, " +
-          "which can cause repeated syncs and conflict copies.",
+        "Off (recommended): only notes and attachments sync. On: also sync appearance, " +
+          "hotkeys, snippets, themes, and your installed plugins themselves (so they appear " +
+          "on every device). Each plugin's own settings stay local per device, and workspace " +
+          "layout and cache are never synced — so device-specific state and secrets don't " +
+          "leave the device. A plugin that stores per-device state outside data.json can be " +
+          "added to Extra exclude patterns below.",
       )
       .addToggle((t) =>
         t.setValue(this.plugin.settings.syncObsidianConfig).onChange(async (v) => {
@@ -395,6 +405,9 @@ export class SelfSyncSettingTab extends PluginSettingTab {
     this.initDraft(); // re-sync the draft to the normalized, saved values
     new Notice("SelfSync: connection settings saved.");
     this.display();
+    // Just connected/updated the backend — offer to adopt shared config if this
+    // device hasn't been offered yet (one-time; no-op otherwise).
+    void this.plugin.maybeOfferBackendConfig();
   }
 
   /** Discard the staged edits and reset the fields to the saved values. */

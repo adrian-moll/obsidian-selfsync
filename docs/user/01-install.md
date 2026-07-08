@@ -31,6 +31,41 @@ into your vault's `.obsidian/plugins/selfsync/` folder, then enable the plugin i
 ## A note on `.obsidian` config sync
 
 By default SelfSync syncs your **notes and attachments** but **not** the
-`.obsidian` config folder — app settings, workspace layout, and plugin data churn
-differently on each device and tend to cause noise. You can turn config sync on in
-**Settings → SelfSync** if you want it, but leaving it off is recommended.
+`.obsidian` config folder. You can turn **Sync Obsidian config folder** on in
+**Settings → SelfSync** if you want your setup to follow you across devices.
+
+When it's on, SelfSync syncs the **portable** config — appearance, hotkeys,
+snippets, themes, and your **installed plugins themselves** (so the same plugins
+appear and enable on every device) — but deliberately keeps the **device-specific**
+parts local:
+
+- **Each plugin's own settings** (`data.json`) stay on the device. A plugin starts
+  with default settings on a new device (configure it once there). This avoids
+  conflict copies inside plugin folders and never uploads plugin secrets (API
+  tokens) to your server.
+- **Workspace layout** and **cache** are never synced (Obsidian rewrites them per
+  device).
+
+If a specific plugin keeps per-device state somewhere other than `data.json`, add
+that path to **Extra exclude patterns**.
+
+> **Turning it on later won't delete anything.** Any plugin `data.json` a previous
+> version already uploaded is simply left on the backend; reclaim that space with
+> **Advanced → Clean up excluded files**.
+
+## Setting up a new device quickly (share your config)
+
+You don't have to re-enter all your settings on each device. On a device that's
+already set up, open **Advanced → Export config to backend** — this publishes your
+non-secret settings (exclude patterns, sync interval, WebDAV URL/username, Git
+options…) to the backend. Your **password, encryption passphrase, and Git token are
+never included**.
+
+On a **new** device, install SelfSync, enter the WebDAV URL, credentials, and sync
+folder, and **Save**. SelfSync then detects the shared config and offers to import
+it before the first sync. You only need to type the secrets (password, and
+passphrase if encryption is on). You can re-pull the latest config anytime with
+**Advanced → Import config from backend**.
+
+(On an encrypted backend, set your passphrase first — the shared config is stored
+encrypted too, so the host only ever sees ciphertext.)
