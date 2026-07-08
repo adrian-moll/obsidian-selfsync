@@ -8,7 +8,10 @@
  * erased at compile) — so both directions are unit-tested in Node.
  *
  * Secrets / per-device fields are NEVER exported and ALWAYS preserved on import:
- *   webdav.password, encryptionPassphrase, git.token, deviceId, bootstrapConfigChecked.
+ *   webdav.password, encryptionPassphrase, deviceId, bootstrapConfigChecked.
+ * The entire `git` block is excluded too: Git backup is desktop-only and
+ * independent of sync, and importing it would arm a tokenless (broken) backup on
+ * the new device — it's configured per device, like its token.
  * Keeping the strip and the preserve in this one module stops the two lists drifting.
  */
 import type { SelfSyncSettings } from "../settings.js";
@@ -29,17 +32,6 @@ export interface ExportedConfig {
   excludeGlobs: string[];
   maxFileMB: number;
   debugLogging: boolean;
-  git: {
-    enabled: boolean;
-    remoteUrl: string;
-    username: string;
-    authorName: string;
-    authorEmail: string;
-    commitOnSync: boolean;
-    push: boolean;
-    pushChunkSize: number;
-    excludeGlobs: string[];
-  };
 }
 
 /** Build the non-secret config payload to publish to the backend. */
@@ -57,17 +49,6 @@ export function buildExportConfig(s: SelfSyncSettings): ExportedConfig {
     excludeGlobs: [...s.excludeGlobs],
     maxFileMB: s.maxFileMB,
     debugLogging: s.debugLogging,
-    git: {
-      enabled: s.git.enabled,
-      remoteUrl: s.git.remoteUrl,
-      username: s.git.username,
-      authorName: s.git.authorName,
-      authorEmail: s.git.authorEmail,
-      commitOnSync: s.git.commitOnSync,
-      push: s.git.push,
-      pushChunkSize: s.git.pushChunkSize,
-      excludeGlobs: [...s.git.excludeGlobs],
-    },
   };
 }
 
@@ -90,7 +71,6 @@ export function applyImportedConfig(current: SelfSyncSettings, parsed: unknown):
   }
   const p = parsed;
   const w = isRecord(p.webdav) ? p.webdav : {};
-  const g = isRecord(p.git) ? p.git : {};
 
   return {
     ...current,
@@ -114,21 +94,9 @@ export function applyImportedConfig(current: SelfSyncSettings, parsed: unknown):
     excludeGlobs: strArr(p.excludeGlobs, current.excludeGlobs),
     maxFileMB: nonNegInt(p.maxFileMB, current.maxFileMB),
     debugLogging: bool(p.debugLogging, current.debugLogging),
-    git: {
-      ...current.git,
-      enabled: bool(g.enabled, current.git.enabled),
-      remoteUrl: str(g.remoteUrl, current.git.remoteUrl),
-      username: str(g.username, current.git.username),
-      authorName: str(g.authorName, current.git.authorName),
-      authorEmail: str(g.authorEmail, current.git.authorEmail),
-      commitOnSync: bool(g.commitOnSync, current.git.commitOnSync),
-      push: bool(g.push, current.git.push),
-      pushChunkSize: posInt(g.pushChunkSize, current.git.pushChunkSize),
-      excludeGlobs: strArr(g.excludeGlobs, current.git.excludeGlobs),
-      // secret — preserved from this device
-      token: current.git.token,
-    },
-    // per-device — preserved from this device
+    // git backup is desktop-only + per-device — kept entirely from this device
+    // (via the `...current` spread above); never taken from the shared config.
+    // deviceId + bootstrapConfigChecked are per-device too.
     deviceId: current.deviceId,
     bootstrapConfigChecked: current.bootstrapConfigChecked,
   };
@@ -146,9 +114,6 @@ function bool(v: unknown, fallback: boolean): boolean {
 }
 function posNum(v: unknown, fallback: number): number {
   return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : fallback;
-}
-function posInt(v: unknown, fallback: number): number {
-  return typeof v === "number" && Number.isFinite(v) && v >= 1 ? Math.floor(v) : fallback;
 }
 function nonNegInt(v: unknown, fallback: number): number {
   return typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.floor(v) : fallback;

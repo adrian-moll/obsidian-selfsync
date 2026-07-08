@@ -57,9 +57,9 @@ that path to **Extra exclude patterns**.
 
 You don't have to re-enter all your settings on each device. On a device that's
 already set up, open **Advanced → Export config to backend** — this publishes your
-non-secret settings (exclude patterns, sync interval, WebDAV URL/username, Git
-options…) to the backend. Your **password, encryption passphrase, and Git token are
-never included**.
+non-secret settings (exclude patterns, sync interval, WebDAV URL/username…) to the
+backend. Your **password and encryption passphrase are never included**, and neither
+is your **Git backup** setup — Git is desktop-only and configured per device.
 
 On a **new** device, install SelfSync, enter the WebDAV URL, credentials, and sync
 folder, and **Save**. SelfSync then detects the shared config and offers to import

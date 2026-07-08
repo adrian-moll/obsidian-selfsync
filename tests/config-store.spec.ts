@@ -47,20 +47,20 @@ describe("buildExportConfig", () => {
     expect(c.encryptionEnabled).toBe(true);
     expect(c.excludeGlobs).toEqual(["**/*.tmp"]);
     expect(c.syncIntervalMinutes).toBe(12);
-    expect(c.git.remoteUrl).toBe("https://git.example/x.git");
-    expect(c.git.authorName).toBe("Alice");
   });
 
-  it("NEVER includes secrets or per-device fields", () => {
+  it("NEVER includes secrets, per-device fields, or the git block", () => {
     const c = buildExportConfig(makeSettings());
     const flat = JSON.stringify(c);
     expect(flat).not.toContain("SECRET-PW");
     expect(flat).not.toContain("SECRET-PASSPHRASE");
     expect(flat).not.toContain("SECRET-TOKEN");
     expect(flat).not.toContain("device-A");
+    // Git backup is desktop-only + per-device: not exported at all.
+    expect(flat).not.toContain("git.example");
     expect((c.webdav as unknown as Record<string, unknown>).password).toBeUndefined();
     expect((c as unknown as Record<string, unknown>).encryptionPassphrase).toBeUndefined();
-    expect((c.git as unknown as Record<string, unknown>).token).toBeUndefined();
+    expect((c as unknown as Record<string, unknown>).git).toBeUndefined();
     expect((c as unknown as Record<string, unknown>).deviceId).toBeUndefined();
   });
 });
@@ -94,14 +94,17 @@ describe("applyImportedConfig", () => {
     expect(merged.webdav.username).toBe("alice");
     expect(merged.syncIntervalMinutes).toBe(30);
     expect(merged.excludeGlobs).toEqual(["Private/**"]);
-    expect(merged.git.remoteUrl).toBe("https://git.example/x.git");
 
     // Secrets + per-device fields kept from the TARGET device.
     expect(merged.webdav.password).toBe("MY-PW");
     expect(merged.encryptionPassphrase).toBe("MY-PASSPHRASE");
-    expect(merged.git.token).toBe("MY-TOKEN");
     expect(merged.deviceId).toBe("device-B");
     expect(merged.bootstrapConfigChecked).toBe(true);
+
+    // The ENTIRE git block stays the target device's own (never from the source).
+    expect(merged.git.token).toBe("MY-TOKEN");
+    expect(merged.git.enabled).toBe(false); // target had it off; source's `true` is ignored
+    expect(merged.git.remoteUrl).toBe(""); // target's empty remote, not the source's
   });
 
   it("ignores unknown keys and coerces/clamps bad values to the current ones", () => {
