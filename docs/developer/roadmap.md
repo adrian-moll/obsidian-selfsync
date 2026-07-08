@@ -1,5 +1,23 @@
 # Roadmap
 
+## Known limitations & next up
+
+The plugin is in daily use and stable; these are the open items, most-actionable
+first. Nothing here blocks normal sync.
+
+- **Resumable transfers & chunked uploads** — large *downloads* stream safely, but
+  *uploads* still read the whole file (bounded by **Max upload size**, clamped
+  lower on mobile since there's no ranged-read API for the local vault), and no
+  transfer resumes after an interruption (it re-runs). See **M2**, below.
+- **End-to-end encryption (E2EE)** — the toggle and opaque-key layout exist, but no
+  content encryption is wired yet. The main unbuilt feature. See **M3** and
+  `encryption.md`.
+- **State DB storage on mobile** — the last-synced snapshot is one JSON blob in
+  `data.json` (persisted once per ~100-op chunk). Fine at current scale; IndexedDB
+  vs JSON is still an open perf question for very large vaults. See spike **S3**.
+- **Real-device acceptance (L4)** and a **Dockerized WebDAV CI test (L2)** — manual
+  / infra items, not code. See **M2** and **M1**.
+
 ## Tech stack
 
 - **Language/build:** TypeScript + esbuild, based on the Obsidian sample-plugin
@@ -15,9 +33,10 @@
 ## Milestones
 
 - **M0 — Scaffold. ✅ DONE.** Plugin skeleton, settings tab, `StorageBackend` +
-  **`VaultAdapter`** interfaces, Local State DB, manifest format, journal;
-  ribbon-icon + Sync-view skeleton; **L1 unit-test harness** (Vitest). No network
-  yet.
+  **`VaultAdapter`** interfaces, Local State DB, manifest format; ribbon-icon +
+  Sync-view skeleton; **L1 unit-test harness** (Vitest). No network yet. (A
+  `Journal` interface was scaffolded here but never wired in and was removed in
+  0.12.0 — crash-safety comes from reconcile-on-startup instead; see NFR1 below.)
 - **M1 — WebDAV end-to-end (desktop, no encryption). ✅ DONE.** Full engine against
   kDrive WebDAV: create/edit/delete/rename, manifest with optimistic concurrency,
   keep-both conflicts. Proven by the **L3 two-device simulation** (in-memory) and a
