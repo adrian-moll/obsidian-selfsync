@@ -139,15 +139,23 @@ concurrent multi-device syncs instead of restarting from zero.
 ## Transfer manager
 
 - Transfers only changed blobs (hash-based change detection, NFR3).
-- **Streamed downloads for large binaries:** a blob over 8 MiB is fetched in
-  ranged `GET`s and written straight to disk with `DataAdapter.appendBinary`
-  (Obsidian ≥ 1.12.3), so the whole file is never held in memory — this is what
-  keeps large downloads from OOM-ing on Android. The blob stays a single object
-  (no per-chunk manifest entries); if the server can't do ranged reads the engine
-  falls back to a whole-blob read, bounded by the in-memory cap (`maxFileBytes`).
-- **Uploads are not chunked** (there is no ranged *read* API for the local vault),
-  so they read the whole file; `maxFileBytes` bounds them and is clamped lower on
-  mobile. Resumable transfers remain future work (see roadmap).
+- **Streamed, resumable downloads for large binaries:** a blob over 8 MiB is
+  fetched in ranged `GET`s and appended to a device-local **staging file** under
+  `.obsidian/plugins/selfsync/incoming/` (via `DataAdapter.appendBinary`, Obsidian
+  ≥ 1.12.3), then renamed onto the final path when complete — so the whole file is
+  never held in memory (the Android OOM fix) and an interrupted transfer **resumes**
+  from the staged offset instead of restarting. The staged file's byte length is
+  the resume offset; a `.etag` sidecar guards against the remote blob changing
+  between attempts (mismatch → discard partial, restart). The blob stays a single
+  object (no per-chunk manifest entries); if the server can't do ranged reads the
+  engine falls back to a whole-blob read, bounded by the in-memory cap
+  (`maxFileBytes`). The engine always excludes its own staging dir from
+  reconciliation.
+- **Uploads are not chunked or resumable** (Obsidian has no ranged *read* API for
+  the local vault — `readBinary` is whole-file on every platform, and `requestUrl`
+  can't stream), so they read the whole file; `maxFileBytes` bounds them and is
+  clamped lower on mobile. Chunked/resumable uploads are blocked on mobile by that
+  API gap (see roadmap).
 - Per-op resilience: a single file's transfer error is logged and skipped (not
   fatal), and retried next cycle.
 - Retries with backoff on transient network errors; surfaces persistent errors to

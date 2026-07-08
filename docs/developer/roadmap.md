@@ -5,10 +5,12 @@
 The plugin is in daily use and stable; these are the open items, most-actionable
 first. Nothing here blocks normal sync.
 
-- **Resumable transfers & chunked uploads** — large *downloads* stream safely, but
-  *uploads* still read the whole file (bounded by **Max upload size**, clamped
-  lower on mobile since there's no ranged-read API for the local vault), and no
-  transfer resumes after an interruption (it re-runs). See **M2**, below.
+- **Chunked/resumable uploads (blocked on mobile)** — large *downloads* stream
+  **and now resume** across interruptions (0.13.0), but *uploads* still read the
+  whole file (bounded by **Max upload size**, clamped lower on mobile). Chunking
+  uploads needs a ranged *read* of the local vault, which Obsidian's API doesn't
+  provide on mobile (`readBinary` is whole-file; `requestUrl` can't stream) — so
+  this is blocked by the platform, not our code. See **M2**, below.
 - **End-to-end encryption (E2EE)** — the toggle and opaque-key layout exist, but no
   content encryption is wired yet. The main unbuilt feature. See **M3** and
   `encryption.md`.
@@ -78,10 +80,16 @@ first. Nothing here blocks normal sync.
   - **Large-file downloads: DONE (0.11.x).** Blobs over 8 MiB stream in ranged
     GETs to `appendBinary` (Obsidian ≥ 1.12.3), so large files download without
     OOM on Android. Per-op resilience + 0-byte handling shipped alongside.
-    **Still deferred:** *resumable* transfers and *chunked uploads* (no ranged
-    read API for the local vault — large uploads are bounded by `maxFileMB`, and
-    clamped lower on mobile); the **L4** real-device acceptance pass on iPad +
-    Android against kDrive (manual).
+  - **Resumable downloads: DONE (0.13.0).** Large downloads stage to
+    `.obsidian/plugins/selfsync/incoming/` and resume from the staged offset after
+    an interruption/app-kill (etag-guarded), then rename onto the final path.
+  - **Blocked by the Obsidian API:** *chunked/resumable uploads* — there's no
+    ranged *read* of a local vault file on mobile (`readBinary` is whole-file;
+    `requestUrl` can't stream), and it would need a multi-part blob format change;
+    desktop could do it via Node `fs` but isn't memory-constrained. Large uploads
+    stay bounded by `maxFileMB` (clamped lower on mobile).
+  - **Still deferred:** the **L4** real-device acceptance pass on iPad + Android
+    against kDrive (manual).
 - **M3 — E2EE. ✗ NOT STARTED.** The `encryptionEnabled` setting and the opaque
   `BlobNaming` path exist, but no actual encryption is wired yet — enabling it
   today would obscure key names without protecting content. This is the main

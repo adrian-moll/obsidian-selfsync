@@ -38,12 +38,13 @@ export interface StorageBackend {
   /** Read a blob together with its etag, or null if the key does not exist. */
   readWithMeta(key: string): Promise<ReadResult | null>;
   /**
-   * Metadata for a blob without downloading it: total size, and whether the
-   * backend/server honors byte-range GETs. Absence (undefined method or null
-   * result) tells the engine chunked reads aren't available. Optional so backends
-   * that can't do it simply omit it.
+   * Metadata for a blob without downloading it: total size, whether the
+   * backend/server honors byte-range GETs, and (if available) its etag — used to
+   * detect that a partially-downloaded blob changed remotely before a resume.
+   * Absence (undefined method or null result) tells the engine chunked reads
+   * aren't available. Optional so backends that can't do it simply omit it.
    */
-  head?(key: string): Promise<{ size: number; acceptRanges: boolean } | null>;
+  head?(key: string): Promise<{ size: number; acceptRanges: boolean; etag?: string } | null>;
   /**
    * Read the byte range [start, endInclusive]. Only called after {@link head}
    * reports acceptRanges, so implementations may assume range support (throw
@@ -103,9 +104,9 @@ export class MemoryBackend implements StorageBackend {
     return b ? { data: b.data.slice(0), etag: b.etag } : null;
   }
 
-  async head(key: string): Promise<{ size: number; acceptRanges: boolean } | null> {
+  async head(key: string): Promise<{ size: number; acceptRanges: boolean; etag?: string } | null> {
     const b = this.blobs.get(key);
-    return b ? { size: b.data.byteLength, acceptRanges: true } : null;
+    return b ? { size: b.data.byteLength, acceptRanges: true, etag: b.etag } : null;
   }
 
   async readRange(key: string, start: number, endInclusive: number): Promise<ArrayBuffer> {

@@ -216,7 +216,7 @@ export class WebDavBackend implements StorageBackend {
     return { data: res.body, etag };
   }
 
-  async head(key: string): Promise<{ size: number; acceptRanges: boolean } | null> {
+  async head(key: string): Promise<{ size: number; acceptRanges: boolean; etag?: string } | null> {
     const res = await this.opts.http({ method: "HEAD", url: this.urlFor(key), headers: this.headers() });
     if (res.status === 404) return null;
     if (res.status < 200 || res.status >= 300) {
@@ -228,7 +228,11 @@ export class WebDavBackend implements StorageBackend {
     // and anything else (bytes / absent) as worth attempting — readRange validates
     // with a 206 check and the engine falls back safely if it isn't.
     const accept = (res.headers["accept-ranges"] ?? "").toLowerCase();
-    return { size: len, acceptRanges: accept !== "none" };
+    // ETag (if the server returns one on HEAD) lets a resumed download confirm the
+    // blob hasn't changed since the partial was staged; undefined just disables resume.
+    const rawEtag = res.headers["etag"];
+    const etag = rawEtag ? normalizeEtag(rawEtag) : undefined;
+    return { size: len, acceptRanges: accept !== "none", etag };
   }
 
   async readRange(key: string, start: number, endInclusive: number): Promise<ArrayBuffer> {

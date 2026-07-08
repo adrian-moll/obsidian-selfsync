@@ -86,6 +86,15 @@ const mb = (bytes: number): string => (bytes / (1024 * 1024)).toFixed(1);
  */
 const DOWNLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
 
+/**
+ * Device-local staging area for in-progress large downloads. Lives inside
+ * SelfSync's own plugin folder, which is always excluded from sync
+ * (`DEFAULT_EXCLUDES`), so partial files are never themselves synced. A staged
+ * file's byte length is the resume offset; a `.etag` sidecar records the blob
+ * version so a resume never stitches two different remote versions together.
+ */
+const DOWNLOAD_STAGING_DIR = ".obsidian/plugins/selfsync/incoming";
+
 /** Whether a vault path is a SelfSync conflict copy (e.g. `note (conflict …).md`). */
 export function isConflictCopy(path: string): boolean {
   return /\(conflict [^)]*\)/.test(path);
@@ -170,7 +179,11 @@ export class SyncEngine {
   }
 
   async sync(opts: SyncOptions): Promise<SyncResult> {
-    const exclude = opts.exclude ?? (() => false);
+    const callerExclude = opts.exclude ?? (() => false);
+    // Always hide our own download staging area from reconciliation — those
+    // partial files are an engine implementation detail and must never sync,
+    // regardless of the caller's exclude config.
+    const exclude = (p: string): boolean => p.startsWith(`${DOWNLOAD_STAGING_DIR}/`) || callerExclude(p);
     const maxFileBytes = opts.maxFileBytes ?? 0;
     const log = opts.log ?? (() => {});
 
@@ -331,21 +344,7 @@ export class SyncEngine {
     if (size > DOWNLOAD_CHUNK_BYTES && backend.head && backend.readRange) {
       const meta = await backend.head(blobKey).catch(() => null);
       if (meta?.acceptRanges) {
-        const total = meta.size || size;
-        let offset = 0;
-        let first = true;
-        while (offset < total) {
-          const end = Math.min(offset + DOWNLOAD_CHUNK_BYTES, total) - 1;
-          const part = await backend.readRange(blobKey, offset, end);
-          if (first) {
-            await vault.writeBinary(path, part);
-            first = false;
-          } else {
-            await vault.appendBinary(path, part);
-          }
-          offset = end + 1;
-          log(`  ↳ streamed ${mb(offset)}/${mb(total)} MB`);
-        }
+        await this.streamBlobToVault(path, blobKey, meta.size || size, meta.etag, log);
         return null;
       }
       log(`  ↳ ranged read unavailable; would read whole blob`);
@@ -362,6 +361,70 @@ export class SyncEngine {
     const data = await backend.read(blobKey);
     await vault.writeBinary(path, data);
     return data;
+  }
+
+  /**
+   * Stream a large blob into the vault in ranged chunks, staging to a device-local
+   * file so an interrupted transfer RESUMES instead of restarting. The staged
+   * file's size is the resume offset; a `.etag` sidecar guards against the remote
+   * blob changing mid-resume. On completion the staged file is renamed onto the
+   * final path (a metadata move — never re-read, so mobile-safe). Requires the
+   * backend's `head`/`readRange` (checked by the caller).
+   */
+  private async streamBlobToVault(
+    path: string,
+    blobKey: string,
+    total: number,
+    etag: string | undefined,
+    log: (msg: string) => void,
+  ): Promise<void> {
+    const { vault, backend } = this.deps;
+    const staging = `${DOWNLOAD_STAGING_DIR}/${await sha256(utf8.encode(path))}`;
+    const sidecar = `${staging}.etag`;
+
+    // Resume only if a partial exists for the SAME remote version; else start clean.
+    const existing = (await vault.stat(staging))?.size ?? 0;
+    const priorEtag = existing > 0 ? await this.readTextFile(sidecar) : null;
+    const canResume = existing > 0 && existing < total && !!etag && !!priorEtag && priorEtag === etag;
+
+    let offset = 0;
+    if (canResume) {
+      offset = existing;
+      log(`  ↳ resuming at ${mb(offset)}/${mb(total)} MB`);
+    } else {
+      // Discard any stale/mismatched partial so we never stitch two versions.
+      if (existing > 0) {
+        await vault.remove(staging).catch(() => {});
+        await vault.remove(sidecar).catch(() => {});
+      }
+      if (etag) await vault.writeBinary(sidecar, utf8.encode(etag));
+    }
+
+    while (offset < total) {
+      const end = Math.min(offset + DOWNLOAD_CHUNK_BYTES, total) - 1;
+      const part = await backend.readRange!(blobKey, offset, end);
+      if (offset === 0) await vault.writeBinary(staging, part);
+      else await vault.appendBinary(staging, part);
+      offset = end + 1;
+      log(`  ↳ streamed ${mb(offset)}/${mb(total)} MB`);
+    }
+
+    // Move the completed file into place, then drop the sidecar. Remove any
+    // existing destination first — rename won't overwrite on some platforms
+    // (e.g. Windows) and a download may be replacing an older local copy.
+    if (await vault.exists(path)) await vault.remove(path).catch(() => {});
+    await vault.rename(staging, path);
+    await vault.remove(sidecar).catch(() => {});
+  }
+
+  /** Read a small text file, or null if it doesn't exist. */
+  private async readTextFile(path: string): Promise<string | null> {
+    if (!(await this.deps.vault.exists(path))) return null;
+    try {
+      return utf8.decode(await this.deps.vault.readBinary(path));
+    } catch {
+      return null;
+    }
   }
 
   /** Store the agreed content of a text file so future conflicts can 3-way merge. */
