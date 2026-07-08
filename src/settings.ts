@@ -14,6 +14,12 @@ export interface GitSettings {
   push: boolean;
   /** Files per commit/push when backing up (smaller = more, smaller pushes). */
   pushChunkSize: number;
+  /**
+   * Max megabytes committed (and therefore pushed) per batch. Each batch is pushed
+   * as its own small pack, so lower this if pushes time out on a large backup or a
+   * slow/strict server. 0 uses the built-in default.
+   */
+  maxPushMB: number;
   /** Extra glob patterns kept out of the Git backup (managed .gitignore block). */
   excludeGlobs: string[];
 }
@@ -87,6 +93,7 @@ export const DEFAULT_SETTINGS: SelfSyncSettings = {
     commitOnSync: true,
     push: true,
     pushChunkSize: 100,
+    maxPushMB: 25,
     excludeGlobs: [],
   },
   deviceId: "",
@@ -528,6 +535,23 @@ export class SelfSyncSettingTab extends PluginSettingTab {
           const n = Number(v);
           if (Number.isFinite(n) && n >= 1) {
             g.pushChunkSize = Math.floor(n);
+            await this.plugin.saveSettings();
+          }
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName("Max push size (MB)")
+      .setDesc(
+        "Largest amount committed and pushed per batch. Each batch is pushed as its own small " +
+          "pack, and unpushed commits are sent one at a time (resumable). Lower this (e.g. 5–10) " +
+          "if pushes time out on a large backup or a strict server. 0 uses the default (25).",
+      )
+      .addText((t) =>
+        t.setValue(String(g.maxPushMB)).onChange(async (v) => {
+          const n = Number(v);
+          if (Number.isFinite(n) && n >= 0) {
+            g.maxPushMB = Math.floor(n);
             await this.plugin.saveSettings();
           }
         }),

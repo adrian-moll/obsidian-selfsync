@@ -16,7 +16,13 @@ first. Nothing here blocks normal sync.
 - **Passphrase rotation** — re-encrypting an existing E2EE backend under a new
   passphrase is not yet a built-in action (see **M3** / `encryption.md`).
 
-Recently resolved: **`.obsidian` config conflicts auto-resolve** — config files no
+Recently resolved: **Git push on large vaults (resumable, incremental)** — a big
+first backup used to time out forever: one failed push stranded commits, and every
+retry re-pushed the entire vault as one pack. Push is now **incremental and
+resumable** — `pushIncremental` (git-backup.ts) sends unpushed commits one small
+pack at a time from wherever the remote is, so each retry makes progress; plus a
+**Max push size (MB)** setting to shrink packs for strict servers. **`.obsidian`
+config conflicts auto-resolve** — config files no
 longer produce keep-both copies: the enabled-plugin lists
 (`community-plugins.json` / `core-plugins.json`) union-merge and any other config
 file takes the newest side (`config-merge.ts`, wired into the engine's conflict

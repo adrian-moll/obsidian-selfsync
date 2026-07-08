@@ -96,6 +96,21 @@ confirm, then deletes those entries and blobs from the remote and drops them fro
 this device's index. It only touches files that are **currently excluded on this
 device**, so review the preview if you use custom per-device exclude globs.
 
+## Git backup: "push deferred — will retry (Request timed out)"
+
+Usually a **large vault** whose first backup is too big for one push. SelfSync
+commits and pushes in small batches, and unpushed commits are sent **one small
+pack at a time and resumed** across retries — so a big first backup makes progress
+each cycle rather than re-sending everything and timing out forever. Give it a few
+sync cycles (or hit **Advanced… → Push now** to keep it moving).
+
+If pushes still time out, your server or connection can't handle the batch size:
+lower **Settings → SelfSync → Max push size (MB)** (try 10, or 5) so each pack is
+smaller, then push again. Keeping very large binaries out of the backup also helps
+— add them to **Git backup excludes** (every version of a binary is stored in
+full). As a last resort, **Advanced… → Compact history to snapshot** collapses the
+repo to a single commit.
+
 ## Still stuck?
 
 Copy the Activity log (button in the SelfSync panel) and open an issue on the

@@ -435,40 +435,31 @@ export default class SelfSyncPlugin extends Plugin {
       const doPush = canPush && (forcePush || Date.now() - this.lastGitPushAt > GIT_PUSH_THROTTLE_MS);
       if (doPush) this.lastGitPushAt = Date.now();
 
-      // Commit + push in chunks so each push is a small pack (survives short
-      // server timeouts on large backups).
+      // Commit in byte-bounded chunks so each commit is a small pack.
+      const maxPushBytes = this.settings.git.maxPushMB > 0 ? this.settings.git.maxPushMB * 1024 * 1024 : undefined;
       const res = await backup.backup(`SelfSync backup (${reason})`, {
         chunkSize: this.settings.git.pushChunkSize,
-        push: doPush,
+        maxBytesPerCommit: maxPushBytes,
       });
       if (res.commits > 0) this.logger.info(`Git: committed ${res.commits} batch(es)`);
 
-      if (res.pushed) {
-        this.gitPushPending = false;
-        this.logger.info("Git: pushed");
-      } else if (res.pushError) {
-        this.gitPushPending = true;
-        this.logPushError(res.pushError, reason);
-      } else if (res.commits > 0) {
-        this.gitPushPending = canPush; // committed, push throttled/off
-      }
-
-      // Drain an earlier backlog (a push that timed out on a prior cycle) — this
-      // is why later syncs now retry the push instead of stranding commits.
-      if (doPush && !res.pushed && !res.pushError && this.gitPushPending) {
+      if (doPush) {
+        // Resumable, incremental push: unpushed commits go one small pack at a
+        // time from wherever the remote is. A large/flaky backup makes progress
+        // each cycle instead of re-sending the whole vault and timing out forever.
         try {
-          await backup.push();
+          const { pushed } = await backup.pushIncremental();
           this.gitPushPending = false;
-          this.logger.info("Git: pushed");
+          if (pushed > 0) this.logger.info(`Git: pushed ${pushed} commit(s)`);
+          else if (res.commits === 0 && reason === "manual") this.logger.info("Git: up to date");
         } catch (e) {
-          this.gitPushPending = true;
+          this.gitPushPending = true; // commits may remain unpushed; resume next cycle
           this.logPushError(e instanceof Error ? e.message : String(e), reason);
         }
+      } else if (res.commits > 0) {
+        this.gitPushPending = canPush; // committed; push throttled/off
       }
 
-      if (res.commits === 0 && !this.gitPushPending && reason === "manual") {
-        this.logger.info("Git: up to date");
-      }
       this.store.update({ gitPushPending: this.gitPushPending });
     } catch (e) {
       const m = e instanceof Error ? e.message : String(e);

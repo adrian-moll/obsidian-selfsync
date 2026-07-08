@@ -162,8 +162,8 @@ export class GitBackup {
    */
   async backup(
     message: string,
-    opts: { chunkSize?: number; maxBytesPerCommit?: number; push: boolean },
-  ): Promise<{ commits: number; pushed: boolean; pushError?: string }> {
+    opts: { chunkSize?: number; maxBytesPerCommit?: number } = {},
+  ): Promise<{ commits: number }> {
     const maxFiles = Math.max(1, opts.chunkSize ?? 100);
     const maxBytes = Math.max(1, opts.maxBytesPerCommit ?? DEFAULT_MAX_PUSH_BYTES);
     const { dir } = this.cfg;
@@ -171,18 +171,6 @@ export class GitBackup {
     const changed = matrix.filter((row) => row[1] !== row[2]); // HEAD !== WORKDIR
 
     let commits = 0;
-    let pushed = false;
-    let pushError: string | undefined;
-    const tryPush = async (): Promise<void> => {
-      if (!opts.push || pushError) return;
-      try {
-        await this.push();
-        pushed = true;
-      } catch (e) {
-        pushError = e instanceof Error ? e.message : String(e);
-      }
-    };
-
     let batch: typeof changed = [];
     let batchBytes = 0;
     const flush = async (): Promise<void> => {
@@ -196,7 +184,6 @@ export class GitBackup {
       commits++;
       batch = [];
       batchBytes = 0;
-      await tryPush();
     };
 
     for (const row of changed) {
@@ -216,9 +203,15 @@ export class GitBackup {
       batchBytes += size;
     }
     await flush();
-    return { commits, pushed, pushError };
+    return { commits };
   }
 
+  private authCallback() {
+    return { username: this.cfg.username || this.cfg.token || "", password: this.cfg.token || "" };
+  }
+
+  /** Push local HEAD to the remote branch. `force` replaces remote history (used
+   *  by compaction). Routine backups use {@link pushIncremental} instead. */
   async push(force = false): Promise<void> {
     if (!this.cfg.remoteUrl) throw new Error("No Git remote configured");
     await git.push({
@@ -228,8 +221,51 @@ export class GitBackup {
       remote: "origin",
       ref: DEFAULT_BRANCH,
       force,
-      onAuth: () => ({ username: this.cfg.username || this.cfg.token || "", password: this.cfg.token || "" }),
+      onAuth: () => this.authCallback(),
     });
+  }
+
+  /**
+   * Push unpushed commits to the remote branch ONE SMALL PACK AT A TIME, from
+   * wherever the remote currently is up to local HEAD. Resumable: if a push times
+   * out partway, the remote has still advanced by the commits that landed, so the
+   * next call resumes from there instead of re-sending everything. This is what
+   * lets a large first backup complete over a slow / timeout-prone link, and
+   * prevents the "retry keeps re-pushing the whole vault" death spiral. Returns
+   * how many commits were pushed (0 = already up to date).
+   */
+  async pushIncremental(): Promise<{ pushed: number }> {
+    if (!this.cfg.remoteUrl) throw new Error("No Git remote configured");
+    const { dir } = this.cfg;
+    const onAuth = () => this.authCallback();
+    const localHead = await git.resolveRef({ fs: this.fs, dir, ref: DEFAULT_BRANCH });
+
+    // What does the remote already have on this branch? (null = empty / no branch)
+    let remoteOid: string | null = null;
+    try {
+      const refs = await git.listServerRefs({ http, url: this.cfg.remoteUrl, prefix: `refs/heads/${DEFAULT_BRANCH}`, onAuth });
+      remoteOid = refs.find((r) => r.ref === `refs/heads/${DEFAULT_BRANCH}`)?.oid ?? null;
+    } catch {
+      remoteOid = null;
+    }
+    if (remoteOid === localHead) return { pushed: 0 };
+
+    // Local commits from HEAD back to (but not including) the remote's oid, then
+    // reversed to oldest-first so each push fast-forwards the remote by one commit.
+    const entries = await git.log({ fs: this.fs, dir, ref: DEFAULT_BRANCH });
+    const pending: string[] = [];
+    for (const e of entries) {
+      if (e.oid === remoteOid) break;
+      pending.push(e.oid);
+    }
+    pending.reverse();
+
+    let pushed = 0;
+    for (const oid of pending) {
+      await git.push({ fs: this.fs, http, dir, remote: "origin", ref: oid, remoteRef: DEFAULT_BRANCH, onAuth });
+      pushed++;
+    }
+    return { pushed };
   }
 
   /** Commit history, optionally filtered to a single file's changes. */

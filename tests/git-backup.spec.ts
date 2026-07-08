@@ -54,18 +54,17 @@ describe("GitBackup", () => {
     for (let i = 0; i < 10; i++) {
       writeFileSync(join(dir, `chunk-${i}.md`), `content ${i} ${"x".repeat(i)}`);
     }
-    const res = await backup.backup("chunked", { chunkSize: 3, push: false });
+    const res = await backup.backup("chunked", { chunkSize: 3 });
     expect(res.commits).toBe(4); // ceil(10 / 3)
-    expect(res.pushed).toBe(false);
 
-    const res2 = await backup.backup("noop", { chunkSize: 3, push: false });
+    const res2 = await backup.backup("noop", { chunkSize: 3 });
     expect(res2.commits).toBe(0); // nothing left to commit
   });
 
   it("splits commits by byte size so each push stays small", async () => {
     for (let i = 0; i < 3; i++) writeFileSync(join(dir, `big-${i}.bin`), "x".repeat(1000));
     // 1000+1000 fits in 2500; the third file spills into a second commit.
-    const res = await backup.backup("bytes", { chunkSize: 100, maxBytesPerCommit: 2500, push: false });
+    const res = await backup.backup("bytes", { chunkSize: 100, maxBytesPerCommit: 2500 });
     expect(res.commits).toBe(2);
   });
 
