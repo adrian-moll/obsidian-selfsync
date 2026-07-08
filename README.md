@@ -11,14 +11,16 @@ Self-hosted, **bring-your-own-backend** sync and backup for [Obsidian](https://o
   never corrupts the vault or the remote.
 - **Optional desktop-only Git backup** — auto-versions your vault to a Git remote,
   with an in-app history/restore view.
-- **Optional end-to-end encryption** *(planned, not yet available)* — with E2EE on,
-  the host would see only ciphertext and file names/paths stay private.
+- **Optional end-to-end encryption** — with E2EE on, content is encrypted on-device
+  (AES-256-GCM) before upload and the host sees only ciphertext behind opaque keys,
+  so file names and folder structure stay private too. Off by default.
 
 > Status: **working (desktop).** WebDAV sync against real kDrive **and** a
 > self-hosted Apache `mod_dav` container — create / edit / delete / rename /
 > auto-merge + keep-both conflicts — plus the trigger model (startup / interval /
-> on-change / background), a live status panel, and desktop Git backup.
-> **Encryption (M3)** and the mobile acceptance pass remain in progress.
+> on-change / background), a live status panel, desktop Git backup, and
+> **optional end-to-end encryption**. The mobile real-device acceptance pass
+> remains in progress.
 
 ## Install
 

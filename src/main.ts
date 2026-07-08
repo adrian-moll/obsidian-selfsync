@@ -27,9 +27,11 @@ import { SyncEngine } from "./engine/engine.js";
 import { ManifestStore } from "./engine/manifest-store.js";
 import { cleanupExcluded } from "./engine/cleanup.js";
 import { SyncScheduler } from "./engine/scheduler.js";
-import { MirrorNaming, OpaqueNaming } from "./engine/naming.js";
+import { type BlobNaming, MirrorNaming, OpaqueNaming } from "./engine/naming.js";
 import { DEFAULT_EXCLUDES, OBSIDIAN_CONFIG_GLOB, OBSIDIAN_VOLATILE, makeExcluder } from "./engine/exclude.js";
 import { WebDavBackend } from "./backend/webdav-backend.js";
+import { CryptoBackend } from "./backend/crypto-backend.js";
+import { MissingPassphraseError, unlock, WrongPassphraseError } from "./backend/crypto-header.js";
 import { obsidianHttp } from "./backend/obsidian-http.js";
 import type { StorageBackend } from "./backend/storage-backend.js";
 import { decodeSecret, encodeSecret, type KeychainProvider } from "./util/secret-store.js";
@@ -489,6 +491,21 @@ export default class SelfSyncPlugin extends Plugin {
     });
   }
 
+  /**
+   * Resolve the effective backend + layout for a sync/maintenance op. With E2EE
+   * off this is the raw backend + browsable mirror layout. With E2EE on, unlock
+   * the vault key (minting the crypto header on first use) and wrap the backend
+   * so every blob AND the manifest are encrypted, using the opaque layout.
+   * Throws MissingPassphraseError / WrongPassphraseError so callers refuse to
+   * sync BEFORE any writes rather than producing garbage (UC10).
+   */
+  private async encryptedContext(inner: StorageBackend): Promise<{ backend: StorageBackend; naming: BlobNaming }> {
+    if (!this.settings.encryptionEnabled) return { backend: inner, naming: new MirrorNaming() };
+    const { key, chunkSize, initialized } = await unlock(inner, this.settings.encryptionPassphrase);
+    if (initialized) this.logger.info("E2EE initialized on this backend (crypto header written)");
+    return { backend: new CryptoBackend(inner, key, chunkSize), naming: new OpaqueNaming() };
+  }
+
   /** One sync cycle, invoked only via the scheduler (single-flight). */
   private async runSync(trigger: string): Promise<void> {
     const encrypted = this.settings.encryptionEnabled;
@@ -508,11 +525,11 @@ export default class SelfSyncPlugin extends Plugin {
     });
 
     try {
-      const naming = encrypted ? new OpaqueNaming() : new MirrorNaming();
+      const { backend: effBackend, naming } = await this.encryptedContext(backend);
       const exclude = makeExcluder(buildExcludePatterns(this.settings));
       const engine = new SyncEngine({
         vault: new ObsidianVaultAdapter(this.app),
-        backend,
+        backend: effBackend,
         state: this.stateStore,
         deviceId: this.settings.deviceId,
         naming,
@@ -604,7 +621,13 @@ export default class SelfSyncPlugin extends Plugin {
       if (this.settings.git.commitOnSync) void this.runGitBackup("after sync");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (isTransientNetworkError(msg)) {
+      if (e instanceof WrongPassphraseError || e instanceof MissingPassphraseError) {
+        // A key problem never resolves by retrying — surface it plainly on every
+        // trigger (a silent background failure would look like nothing synced).
+        this.store.update({ status: "error", detail: "Encryption locked", lastError: msg });
+        this.logger.error("Encryption: " + msg);
+        new Notice("SelfSync: " + msg + " Check the passphrase in settings.");
+      } else if (isTransientNetworkError(msg)) {
         // Offline / DNS not ready (common right after a mobile app resume).
         // Recover quietly with a short backoff instead of alarming the user.
         this.store.update({ status: "idle", detail: "Offline — will retry" });
@@ -704,18 +727,23 @@ export default class SelfSyncPlugin extends Plugin {
       new Notice("SelfSync: a sync is in progress — try again in a moment.");
       return;
     }
-    const backend = this.buildBackend();
-    if (!backend) {
+    const raw = this.buildBackend();
+    if (!raw) {
       new Notice("SelfSync: configure the WebDAV backend first.");
       return;
     }
-    const naming = this.settings.encryptionEnabled ? new OpaqueNaming() : new MirrorNaming();
     const exclude = makeExcluder(buildExcludePatterns(this.settings));
-    const manifests = new ManifestStore(backend, this.settings.deviceId, naming.manifestKey);
     const log = (m: string): void => this.logger.debug(m);
 
     let preview;
+    let backend: StorageBackend;
+    let manifests: ManifestStore;
     try {
+      // With E2EE on, operate through the crypto-wrapped backend so the manifest
+      // decrypts and blob removal targets the right (opaque) keys.
+      const ctx = await this.encryptedContext(raw);
+      backend = ctx.backend;
+      manifests = new ManifestStore(backend, this.settings.deviceId, ctx.naming.manifestKey);
       preview = await cleanupExcluded({ manifests, backend, exclude, state: this.stateStore, dryRun: true, log });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -814,6 +842,7 @@ export default class SelfSyncPlugin extends Plugin {
     const keychain = await this.getKeychain();
     this.settings.webdav.password = decodeSecret(this.settings.webdav.password, keychain);
     this.settings.git.token = decodeSecret(this.settings.git.token, keychain);
+    this.settings.encryptionPassphrase = decodeSecret(this.settings.encryptionPassphrase, keychain);
     if (!this.settings.deviceId) this.settings.deviceId = crypto.randomUUID();
     await this.savePersisted(); // re-writes in the current mode (auto-migrates legacy cleartext)
   }
@@ -826,6 +855,7 @@ export default class SelfSyncPlugin extends Plugin {
       ...this.settings,
       webdav: { ...this.settings.webdav, password: encodeSecret(mode, this.settings.webdav.password, keychain) },
       git: { ...this.settings.git, token: encodeSecret(mode, this.settings.git.token, keychain) },
+      encryptionPassphrase: encodeSecret(mode, this.settings.encryptionPassphrase, keychain),
     };
     // On IndexedDB the state lives in the DB, so data.json holds settings only.
     const data: PersistedData = this.usingIndexedDb

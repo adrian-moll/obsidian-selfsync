@@ -23,6 +23,12 @@ export interface SelfSyncSettings {
   /** How the WebDAV password and Git token are stored at rest in data.json. */
   secretStorage: SecretStorageMode;
   encryptionEnabled: boolean;
+  /**
+   * E2EE passphrase (FR5). Derives the vault key; must match on every device.
+   * Stored at rest like the other secrets (per `secretStorage`). Empty = not set;
+   * enabling encryption without it refuses to sync rather than write garbage.
+   */
+  encryptionPassphrase: string;
   /** Sync the .obsidian config folder (default off — it churns across devices). */
   syncObsidianConfig: boolean;
   syncOnStartup: boolean;
@@ -50,6 +56,7 @@ export const DEFAULT_SETTINGS: SelfSyncSettings = {
   webdav: { url: "", username: "", password: "", rootDir: "selfsync" },
   secretStorage: "keychain",
   encryptionEnabled: false,
+  encryptionPassphrase: "",
   syncObsidianConfig: false,
   syncOnStartup: true,
   syncIntervalMinutes: 5,
@@ -173,17 +180,39 @@ export class SelfSyncSettingTab extends PluginSettingTab {
     });
 
     new Setting(containerEl)
-      .setName("Hide file names (encrypted layout)")
+      .setName("End-to-end encryption")
       .setDesc(
-        "Off (default): files are stored at their real paths — the server folder is browsable and mirrors your vault. " +
-          "On: file names and folders are hidden behind opaque keys (not browsable). Full content encryption arrives in a later version.",
+        "Off (default): files are stored at their real paths — the server folder is browsable and mirrors your vault, " +
+          "protected only by transport TLS and trust in the host. " +
+          "On: file contents AND names/folders are encrypted on-device (AES-256-GCM) before upload, so the host sees " +
+          "only ciphertext behind opaque keys. Set the same passphrase on every device.",
       )
       .addToggle((t) =>
         t.setValue(this.plugin.settings.encryptionEnabled).onChange(async (v) => {
           this.plugin.settings.encryptionEnabled = v;
           await this.plugin.saveSettings();
+          this.display(); // reveal / hide the passphrase field
         }),
       );
+
+    if (this.plugin.settings.encryptionEnabled) {
+      new Setting(containerEl)
+        .setName("Encryption passphrase")
+        .setDesc(
+          "Derives the vault key. Must be IDENTICAL on every device. There is NO recovery — " +
+            "if you lose it, the encrypted data cannot be read. Changing it on an existing " +
+            "encrypted backend won't re-encrypt already-uploaded data; use a fresh sync folder.",
+        )
+        .addText((t) => {
+          t.inputEl.type = "password";
+          t.setPlaceholder("a strong, memorable passphrase")
+            .setValue(this.plugin.settings.encryptionPassphrase)
+            .onChange(async (v) => {
+              this.plugin.settings.encryptionPassphrase = v;
+              await this.plugin.saveSettings();
+            });
+        });
+    }
 
     new Setting(containerEl)
       .setName("Sync Obsidian config folder (.obsidian)")

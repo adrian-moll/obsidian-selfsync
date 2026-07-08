@@ -11,14 +11,16 @@ first. Nothing here blocks normal sync.
   uploads needs a ranged *read* of the local vault, which Obsidian's API doesn't
   provide on mobile (`readBinary` is whole-file; `requestUrl` can't stream) — so
   this is blocked by the platform, not our code. See **M2**, below.
-- **End-to-end encryption (E2EE)** — the toggle and opaque-key layout exist, but no
-  content encryption is wired yet. The main unbuilt feature. See **M3** and
-  `encryption.md`.
 - **Real-device acceptance (L4)** and a **Dockerized WebDAV CI test (L2)** — manual
   / infra items, not code. See **M2** and **M1**.
+- **Passphrase rotation** — re-encrypting an existing E2EE backend under a new
+  passphrase is not yet a built-in action (see **M3** / `encryption.md`).
 
-Recently resolved: **State DB storage (spike S3)** — the snapshot now lives in
-IndexedDB (only changed keys written per flush), with a JSON fallback (0.14.0).
+Recently resolved: **End-to-end encryption (M3)** — content and paths are now
+encrypted on-device (AES-256-GCM, PBKDF2 key, framed streaming blobs, wrong-
+passphrase verifier); see **M3** below. **State DB storage (spike S3)** — the
+snapshot now lives in IndexedDB (only changed keys written per flush), with a JSON
+fallback (0.14.0).
 **Advanced maintenance panel + "clean up excluded files"** (0.15.0) — a Sync-panel
 button opens a modal gathering connection tests, git commit/push/compact, reset, and
 a dry-run-previewed purge of remote/state entries for now-excluded paths (fixes the
@@ -94,10 +96,21 @@ leftover-`.git` cruft that bloated the manifest).
     stay bounded by `maxFileMB` (clamped lower on mobile).
   - **Still deferred:** the **L4** real-device acceptance pass on iPad + Android
     against kDrive (manual).
-- **M3 — E2EE. ✗ NOT STARTED.** The `encryptionEnabled` setting and the opaque
-  `BlobNaming` path exist, but no actual encryption is wired yet — enabling it
-  today would obscure key names without protecting content. This is the main
-  remaining feature. (See `encryption.md` for the intended scheme.)
+- **M3 — E2EE. ✅ DONE.** Content **and** paths are encrypted on-device before
+  upload (FR5). A `CryptoBackend` decorator (`src/backend/crypto-backend.ts`) wraps
+  the WebDAV backend when encryption is on: **AES-256-GCM** blobs in a framed
+  "SSE1" format, key from the passphrase via **PBKDF2-SHA256** (`src/util/crypto.ts`),
+  and a `crypto.json` header carrying the salt/KDF params/verifier so any device
+  derives the same key and a **wrong passphrase fails before any writes** (UC10,
+  `src/backend/crypto-header.ts`). Because the manifest is written through the same
+  backend it is encrypted too, so file names/folders are confidential. The framed
+  format **stream-decrypts per frame**, so large encrypted downloads still stream
+  (the mobile OOM fix holds under encryption). The engine is unchanged — it speaks
+  plaintext paths/sizes and `CryptoBackend` translates plaintext byte ranges to
+  frame ranges. Proven by crypto unit tests + a `CryptoBackend` contract/streaming
+  suite + a two-device encrypted simulation (convergence, conflicts, no plaintext
+  at rest, wrong-key rejection). 148 tests green. *Deferred:* passphrase rotation.
+  (See `encryption.md`.)
 - **M4 — CouchDB backend. ⌫ REMOVED.** A `CouchDbBackend` was built and validated
   (blob store: one base64 JSON doc per key, `_rev` as the etag) but **removed** once
   M4b landed: as a dumb blob store it only added a second code path, ~33% base64
