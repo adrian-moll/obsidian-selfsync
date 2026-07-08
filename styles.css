@@ -182,6 +182,18 @@ textarea.selfsync-activity-log {
 }
 
 /* Advanced maintenance modal */
+.modal.selfsync-advanced-modal {
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal.selfsync-advanced-modal .modal-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .selfsync-advanced .selfsync-section {
   margin-bottom: 0.75rem;
 }

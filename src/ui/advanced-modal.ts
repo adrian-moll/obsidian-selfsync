@@ -26,6 +26,9 @@ export class AdvancedModal extends Modal {
   }
 
   onOpen(): void {
+    // Bound the modal height + let its content scroll, so all actions are reachable
+    // on short/mobile screens (iPad/iOS) instead of overflowing off-screen.
+    this.modalEl.addClass("selfsync-advanced-modal");
     const { contentEl } = this;
     contentEl.addClass("selfsync-advanced");
     contentEl.createEl("h3", { text: "SelfSync — Advanced" });
