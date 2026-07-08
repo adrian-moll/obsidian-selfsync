@@ -322,6 +322,14 @@ export class SyncEngine {
     log: (msg: string) => void,
   ): Promise<ArrayBuffer | null> {
     const { vault, backend } = this.deps;
+    // An empty file has no bytes to fetch — write it directly and skip the GET.
+    // Some WebDAV servers/proxies return HTTP 500 on GET of a 0-byte object, so
+    // reading it would fail for no reason.
+    if (size === 0) {
+      const empty = new ArrayBuffer(0);
+      await vault.writeBinary(path, empty);
+      return empty;
+    }
     if (size > DOWNLOAD_CHUNK_BYTES && backend.head && backend.readRange) {
       const meta = await backend.head(blobKey).catch(() => null);
       if (meta?.acceptRanges) {
@@ -429,7 +437,8 @@ export class SyncEngine {
       case "conflict": {
         const entry = working.entries[op.path];
         log(`conflict ${op.path} (remote ${mb(entry.size)} MB); reading remote+local`);
-        const remoteData = await backend.read(entry.blobKey);
+        // Skip the GET for a 0-byte remote (empty file) — some servers 500 on it.
+        const remoteData = entry.size === 0 ? new ArrayBuffer(0) : await backend.read(entry.blobKey);
         const localData = await vault.readBinary(op.path);
 
         // Try a 3-way auto-merge for text notes edited in different regions.

@@ -100,6 +100,28 @@ describe("chunked large-file download", () => {
     expect(backend.reads).toBe(0);
   });
 
+  it("downloads a 0-byte file without any backend read (empty files 500 on some servers)", async () => {
+    const backend = new CountingBackend(new MemoryBackend());
+    const a = makeDevice(backend, "A");
+    await a.vault.writeBinary("notes/empty.md", new ArrayBuffer(0));
+    await a.sync();
+
+    const b = makeDevice(backend, "B");
+    backend.reads = 0;
+    backend.ranged = 0;
+    backend.heads = 0;
+    const res = await b.sync();
+
+    expect(res.committed).toBe(true);
+    expect(res.failed).toEqual([]);
+    expect(await b.vault.exists("notes/empty.md")).toBe(true);
+    expect((await b.vault.readBinary("notes/empty.md")).byteLength).toBe(0);
+    // No blob GET at all for the empty file.
+    expect(backend.reads).toBe(0);
+    expect(backend.ranged).toBe(0);
+    expect(backend.heads).toBe(0);
+  });
+
   it("still uses a single read for small blobs", async () => {
     const backend = new CountingBackend(new MemoryBackend());
     const a = makeDevice(backend, "A");
