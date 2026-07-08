@@ -21,6 +21,7 @@ export interface ExportedConfig {
   webdav: { url: string; username: string; rootDir: string };
   secretStorage: SelfSyncSettings["secretStorage"];
   encryptionEnabled: boolean;
+  autoSyncEnabled: boolean;
   syncObsidianConfig: boolean;
   syncOnStartup: boolean;
   syncIntervalMinutes: number;
@@ -48,6 +49,7 @@ export function buildExportConfig(s: SelfSyncSettings): ExportedConfig {
     webdav: { url: s.webdav.url, username: s.webdav.username, rootDir: s.webdav.rootDir },
     secretStorage: s.secretStorage,
     encryptionEnabled: s.encryptionEnabled,
+    autoSyncEnabled: s.autoSyncEnabled,
     syncObsidianConfig: s.syncObsidianConfig,
     syncOnStartup: s.syncOnStartup,
     syncIntervalMinutes: s.syncIntervalMinutes,
@@ -104,6 +106,7 @@ export function applyImportedConfig(current: SelfSyncSettings, parsed: unknown):
     encryptionEnabled: bool(p.encryptionEnabled, current.encryptionEnabled),
     // secret — preserved from this device
     encryptionPassphrase: current.encryptionPassphrase,
+    autoSyncEnabled: bool(p.autoSyncEnabled, current.autoSyncEnabled),
     syncObsidianConfig: bool(p.syncObsidianConfig, current.syncObsidianConfig),
     syncOnStartup: bool(p.syncOnStartup, current.syncOnStartup),
     syncIntervalMinutes: posNum(p.syncIntervalMinutes, current.syncIntervalMinutes),

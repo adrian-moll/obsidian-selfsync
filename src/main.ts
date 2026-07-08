@@ -198,19 +198,21 @@ export default class SelfSyncPlugin extends Plugin {
   private setupTriggers(): void {
     // On a freshly-connected device, offer to adopt the shared config stored on the
     // backend BEFORE the first file sync, then start the startup reconcile (NFR1).
+    // The config offer runs regardless of auto-sync; only the file sync is gated.
     void (async () => {
       await this.maybeOfferBackendConfig();
-      if (this.settings.syncOnStartup) void this.scheduler.trigger("startup");
+      if (this.settings.autoSyncEnabled && this.settings.syncOnStartup) void this.scheduler.trigger("startup");
     })();
 
-    // Periodic interval.
-    if (this.settings.syncIntervalMinutes > 0) {
-      this.scheduler.startInterval("interval", this.settings.syncIntervalMinutes * 60_000);
-    }
+    // Periodic interval (started only when auto-sync is on; toggled live via
+    // onAutoSyncToggled).
+    this.applyIntervalTrigger();
 
     // Debounced on file change.
     const onChange = () => {
-      if (this.settings.syncOnFileChange) this.scheduler.requestDebounced("change", CHANGE_DEBOUNCE_MS);
+      if (this.settings.autoSyncEnabled && this.settings.syncOnFileChange) {
+        this.scheduler.requestDebounced("change", CHANGE_DEBOUNCE_MS);
+      }
     };
     this.registerEvent(this.app.vault.on("modify", onChange));
     this.registerEvent(this.app.vault.on("create", onChange));
@@ -218,12 +220,37 @@ export default class SelfSyncPlugin extends Plugin {
     this.registerEvent(this.app.vault.on("rename", onChange));
 
     // Best-effort flush on quit / backgrounding (not guaranteed to run — the
-    // startup reconcile is what guarantees convergence).
-    this.registerEvent(this.app.workspace.on("quit", () => void this.scheduler.trigger("quit")));
+    // startup reconcile is what guarantees convergence). Skipped when auto-sync off.
+    this.registerEvent(
+      this.app.workspace.on("quit", () => {
+        if (this.settings.autoSyncEnabled) void this.scheduler.trigger("quit");
+      }),
+    );
     this.registerDomEvent(document, "visibilitychange", () => {
-      if (document.hidden) void this.scheduler.trigger("background");
+      if (document.hidden && this.settings.autoSyncEnabled) void this.scheduler.trigger("background");
     });
-    this.registerDomEvent(window, "blur", () => void this.scheduler.trigger("background"));
+    this.registerDomEvent(window, "blur", () => {
+      if (this.settings.autoSyncEnabled) void this.scheduler.trigger("background");
+    });
+  }
+
+  /** Start or stop the periodic interval to match the current settings. */
+  private applyIntervalTrigger(): void {
+    if (this.settings.autoSyncEnabled && this.settings.syncIntervalMinutes > 0) {
+      this.scheduler.startInterval("interval", this.settings.syncIntervalMinutes * 60_000);
+    } else {
+      this.scheduler.stopInterval();
+    }
+  }
+
+  /** Called when the Automatic sync toggle changes — (re)arm or halt auto triggers. */
+  onAutoSyncToggled(): void {
+    this.applyIntervalTrigger();
+    // Cancel any queued debounced auto-run; on-change/quit read the flag live.
+    if (!this.settings.autoSyncEnabled) this.scheduler.cancelDebounce();
+    this.store.update({
+      detail: this.settings.autoSyncEnabled ? "Idle" : "Auto-sync off — Sync now to sync manually",
+    });
   }
 
   async activateView(): Promise<void> {

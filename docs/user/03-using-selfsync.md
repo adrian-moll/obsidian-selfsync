@@ -14,6 +14,14 @@ SelfSync syncs on several triggers so you rarely think about it:
 
 You can always force one with **Sync now**.
 
+### Manual-only mode
+
+Prefer to sync only when *you* decide? Turn off **Automatic sync** in
+**Settings → SelfSync**. All the automatic triggers above stop, and your vault is
+left untouched until you run **Sync now** (command, ribbon, or Advanced) — which
+still works normally. Handy on a metered connection, or while reorganizing a lot
+of files and you don't want mid-edit syncs.
+
 ## The status panel
 
 Open the **SelfSync** view from the ribbon icon (works on desktop and mobile). It

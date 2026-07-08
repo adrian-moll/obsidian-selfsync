@@ -29,6 +29,12 @@ export interface SelfSyncSettings {
    * enabling encryption without it refuses to sync rather than write garbage.
    */
   encryptionPassphrase: string;
+  /**
+   * Whether AUTOMATIC sync runs (startup, interval, on-change, quit/background).
+   * When off, none of those fire — but manual "Sync now" (command / ribbon /
+   * Advanced) still works, as do its follow-up retries. Default on.
+   */
+  autoSyncEnabled: boolean;
   /** Sync the .obsidian config folder (default off — it churns across devices). */
   syncObsidianConfig: boolean;
   syncOnStartup: boolean;
@@ -63,6 +69,7 @@ export const DEFAULT_SETTINGS: SelfSyncSettings = {
   secretStorage: "keychain",
   encryptionEnabled: false,
   encryptionPassphrase: "",
+  autoSyncEnabled: true,
   syncObsidianConfig: false,
   syncOnStartup: true,
   syncIntervalMinutes: 5,
@@ -153,6 +160,21 @@ export class SelfSyncSettingTab extends PluginSettingTab {
       cls: "setting-item-description",
       text: "Self-hosted, bring-your-own-backend sync and backup. Connection changes below apply only when you click Save.",
     });
+
+    new Setting(containerEl)
+      .setName("Automatic sync")
+      .setDesc(
+        "When on, SelfSync syncs automatically (on startup, on the interval below, after " +
+          "file changes, and when Obsidian backgrounds/quits). Turn it off to sync only when " +
+          "you choose — manual 'Sync now' (command, ribbon, or Advanced) still works.",
+      )
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.autoSyncEnabled).onChange(async (v) => {
+          this.plugin.settings.autoSyncEnabled = v;
+          await this.plugin.saveSettings();
+          this.plugin.onAutoSyncToggled();
+        }),
+      );
 
     new Setting(containerEl).setName("WebDAV").setHeading();
 

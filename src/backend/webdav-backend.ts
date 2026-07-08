@@ -109,8 +109,14 @@ export class WebDavBackend implements StorageBackend {
       .join("/");
   }
 
+  private baseUrl(): string {
+    return this.opts.baseUrl.replace(/\/+$/, "");
+  }
+
   private rootUrl(): string {
-    return this.opts.baseUrl.replace(/\/+$/, "") + "/" + encodeURIComponent(this.opts.rootDir) + "/";
+    // Encode rootDir PER SEGMENT so a nested subfolder ("Obsidian/ThisIsMyWay")
+    // keeps its "/" separators instead of being mangled into one %2F segment.
+    return this.baseUrl() + "/" + this.encodePath(this.opts.rootDir) + "/";
   }
 
   private urlFor(key: string): string {
@@ -131,10 +137,19 @@ export class WebDavBackend implements StorageBackend {
 
   async ensureRoot(): Promise<void> {
     if (this.rootEnsured) return;
-    const res = await this.opts.http({ method: "MKCOL", url: this.rootUrl(), headers: this.headers() });
-    // 201 = created, 405 = already exists. Both are fine.
-    if (res.status !== 201 && res.status !== 405) {
-      throw new Error(`WebDAV MKCOL ${this.opts.rootDir} failed: HTTP ${res.status}`);
+    // rootDir may itself be nested ("Obsidian/ThisIsMyWay"). MKCOL can't create a
+    // collection whose parent is missing (kDrive returns 404), so create each
+    // ancestor in turn: MKCOL Obsidian/, then MKCOL Obsidian/ThisIsMyWay/.
+    const parts = this.opts.rootDir.split("/").filter((s) => s.length > 0);
+    let prefix = "";
+    for (const part of parts) {
+      prefix = prefix ? `${prefix}/${part}` : part;
+      const url = this.baseUrl() + "/" + this.encodePath(prefix) + "/";
+      const res = await this.opts.http({ method: "MKCOL", url, headers: this.headers() });
+      // 201 = created, 405 = already exists. Both are fine.
+      if (res.status !== 201 && res.status !== 405) {
+        throw new Error(`WebDAV MKCOL ${prefix} failed: HTTP ${res.status}`);
+      }
     }
     this.rootEnsured = true;
   }

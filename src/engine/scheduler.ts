@@ -84,6 +84,14 @@ export class SyncScheduler {
     }
   }
 
+  /** Cancel a pending debounced run, if any (e.g. when auto-sync is switched off). */
+  cancelDebounce(): void {
+    if (this.debounceHandle !== null) {
+      this.timers.clearTimeout(this.debounceHandle);
+      this.debounceHandle = null;
+    }
+  }
+
   /** Cancel any pending debounce and interval (call on plugin unload). */
   dispose(): void {
     if (this.debounceHandle !== null) {

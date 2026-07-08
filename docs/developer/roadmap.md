@@ -16,7 +16,14 @@ first. Nothing here blocks normal sync.
 - **Passphrase rotation** — re-encrypting an existing E2EE backend under a new
   passphrase is not yet a built-in action (see **M3** / `encryption.md`).
 
-Recently resolved: **Config portability** — with config sync on, `.obsidian` now
+Recently resolved: **Nested `rootDir` on kDrive** — a sync folder with a `/` in it
+(e.g. `Obsidian/ThisIsMyWay`) failed with `MKCOL … 404`: `rootUrl` mangled the `/`
+into `%2F` and `ensureRoot` tried to create the nested collection in one MKCOL
+without its parent. Now `rootDir` is encoded per-segment and each ancestor is
+created in turn (`webdav-backend.ts`, `tests/webdav-rootdir.spec.ts`).
+**Manual-only mode** — an **Automatic sync** toggle (settings) gates the startup /
+interval / on-change / quit triggers while leaving manual "Sync now" (and its
+retries) working; the preference is part of the shared config. **Config portability** — with config sync on, `.obsidian` now
 syncs the portable config **and plugin code** (manifest/main.js/styles.css) so
 plugins follow across devices, while each plugin's `data.json` (settings/secrets),
 workspace, and cache stay device-local (`OBSIDIAN_CONFIG_EXCLUDES` in `exclude.ts`).

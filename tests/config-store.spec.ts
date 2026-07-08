@@ -11,6 +11,7 @@ function makeSettings(over: Partial<SelfSyncSettings> = {}): SelfSyncSettings {
     secretStorage: "keychain",
     encryptionEnabled: true,
     encryptionPassphrase: "SECRET-PASSPHRASE",
+    autoSyncEnabled: true,
     syncObsidianConfig: false,
     syncOnStartup: true,
     syncIntervalMinutes: 12,
@@ -124,12 +125,13 @@ describe("applyImportedConfig", () => {
   });
 
   it("round-trips: export then import onto another device yields the source's non-secret config", () => {
-    const a = makeSettings({ syncObsidianConfig: true, excludeGlobs: ["A/**"] });
+    const a = makeSettings({ syncObsidianConfig: true, excludeGlobs: ["A/**"], autoSyncEnabled: false });
     const exported = JSON.parse(JSON.stringify(buildExportConfig(a)));
-    const b = makeSettings({ deviceId: "device-B", syncObsidianConfig: false, excludeGlobs: [] });
+    const b = makeSettings({ deviceId: "device-B", syncObsidianConfig: false, excludeGlobs: [], autoSyncEnabled: true });
     const merged = applyImportedConfig(b, exported);
     expect(merged.syncObsidianConfig).toBe(true);
     expect(merged.excludeGlobs).toEqual(["A/**"]);
+    expect(merged.autoSyncEnabled).toBe(false); // preference propagates
     expect(merged.deviceId).toBe("device-B");
   });
 });
