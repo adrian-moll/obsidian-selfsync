@@ -261,7 +261,16 @@ export class SyncEngine {
       // the whole manifest per chunk was O(N²) and a large-vault memory hog.
       const chunkMutations: Array<() => Promise<void>> = [];
       const succeeded: Op[] = [];
-      for (const op of chunk) {
+      // Progress is reported per file as it transfers (not once per committed
+      // chunk), so the count advances smoothly through a large sync instead of
+      // jumping in CHUNK-sized steps. The transfer is the slow part; the manifest
+      // commit that follows is quick. The caller throttles UI updates. `total`
+      // (files remaining after this chunk + this chunk) stays fixed across the
+      // chunk, so the count is monotonic within it.
+      const chunkStart = done;
+      const chunkTotal = chunkStart + chunk.length + ops.length;
+      for (let i = 0; i < chunk.length; i++) {
+        const op = chunk[i];
         // Snapshot the manifest entries + queued mutations this op may touch, so a
         // failure (e.g. a server 500 on one file) rolls back cleanly and we can
         // skip just that file instead of aborting the whole sync. (Since 0.10.0
@@ -282,6 +291,7 @@ export class SyncEngine {
           failed.push(opLabel(op));
           log(`  ✗ ${opLabel(op)}: ${msg}`);
         }
+        opts.onProgress?.(chunkStart + i + 1, chunkTotal);
       }
 
       try {

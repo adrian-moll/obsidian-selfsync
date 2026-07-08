@@ -79,7 +79,30 @@ export const DEFAULT_SETTINGS: SelfSyncSettings = {
   deviceId: "",
 };
 
+/**
+ * Editable copy of the connection & encryption fields. These are staged here and
+ * applied to the live settings only when the user clicks Save — changing the
+ * backend URL, sync folder, or encryption mode mid-flight (or half-typed) could
+ * point the next sync at a different remote, so they are NOT applied live like
+ * the operational settings below.
+ */
+interface ConnDraft {
+  url: string;
+  username: string;
+  password: string;
+  rootDir: string;
+  secretStorage: SecretStorageMode;
+  encryptionEnabled: boolean;
+  encryptionPassphrase: string;
+}
+
 export class SelfSyncSettingTab extends PluginSettingTab {
+  /** Staged connection/encryption edits; null until the tab is opened. */
+  private draft: ConnDraft | null = null;
+  private dirty = false;
+  /** The Save-bar container, re-rendered in place as `dirty` changes. */
+  private saveBarEl: HTMLElement | null = null;
+
   constructor(
     app: App,
     private readonly plugin: SelfSyncPlugin,
@@ -87,14 +110,41 @@ export class SelfSyncSettingTab extends PluginSettingTab {
     super(app, plugin);
   }
 
+  /** Leaving the settings pane discards any unsaved connection edits. */
+  hide(): void {
+    this.draft = null;
+    this.dirty = false;
+    this.saveBarEl = null;
+  }
+
+  private initDraft(): void {
+    const s = this.plugin.settings;
+    this.draft = {
+      url: s.webdav.url,
+      username: s.webdav.username,
+      password: s.webdav.password,
+      rootDir: s.webdav.rootDir,
+      secretStorage: s.secretStorage,
+      encryptionEnabled: s.encryptionEnabled,
+      encryptionPassphrase: s.encryptionPassphrase,
+    };
+  }
+
+  private markDirty(): void {
+    this.dirty = true;
+    if (this.saveBarEl) this.renderSaveBar(this.saveBarEl);
+  }
+
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
+    if (!this.draft) this.initDraft();
+    const d = this.draft!;
 
     containerEl.createEl("h3", { text: "SelfSync" });
     containerEl.createEl("p", {
       cls: "setting-item-description",
-      text: "Self-hosted, bring-your-own-backend sync and backup. Configure your WebDAV backend below.",
+      text: "Self-hosted, bring-your-own-backend sync and backup. Connection changes below apply only when you click Save.",
     });
 
     new Setting(containerEl).setName("WebDAV").setHeading();
@@ -105,16 +155,16 @@ export class SelfSyncSettingTab extends PluginSettingTab {
       .addText((t) =>
         t
           .setPlaceholder("https://…/dav/")
-          .setValue(this.plugin.settings.webdav.url)
-          .onChange(async (v) => {
-            this.plugin.settings.webdav.url = v.trim();
-            await this.plugin.saveSettings();
+          .setValue(d.url)
+          .onChange((v) => {
+            d.url = v;
+            this.markDirty();
           }),
       );
     new Setting(containerEl).setName("WebDAV username").addText((t) =>
-      t.setValue(this.plugin.settings.webdav.username).onChange(async (v) => {
-        this.plugin.settings.webdav.username = v.trim();
-        await this.plugin.saveSettings();
+      t.setValue(d.username).onChange((v) => {
+        d.username = v;
+        this.markDirty();
       }),
     );
     new Setting(containerEl)
@@ -122,28 +172,33 @@ export class SelfSyncSettingTab extends PluginSettingTab {
       .setDesc("For kDrive, use an app-specific password (not your login password). Stored per the Backend security setting below.")
       .addText((t) => {
         t.inputEl.type = "password";
-        t.setValue(this.plugin.settings.webdav.password).onChange(async (v) => {
-          this.plugin.settings.webdav.password = v;
-          await this.plugin.saveSettings();
+        t.setValue(d.password).onChange((v) => {
+          d.password = v;
+          this.markDirty();
         });
       });
     new Setting(containerEl)
       .setName("Sync folder")
       .setDesc("Folder on the WebDAV server that holds the synced data.")
       .addText((t) =>
-        t.setValue(this.plugin.settings.webdav.rootDir).onChange(async (v) => {
-          this.plugin.settings.webdav.rootDir = v.trim() || "selfsync";
-          await this.plugin.saveSettings();
+        t.setValue(d.rootDir).onChange((v) => {
+          d.rootDir = v;
+          this.markDirty();
         }),
       );
 
     new Setting(containerEl)
       .setName("Test WebDAV connection")
-      .setDesc("Check that the URL and credentials above can reach the server.")
+      .setDesc("Check that the URL and credentials as typed above can reach the server (no need to save first).")
       .addButton((b) => {
         b.setButtonText("Test connection").onClick(async () => {
           b.setButtonText("Testing…").setDisabled(true);
-          const res = await this.plugin.testWebDavConnection();
+          const res = await this.plugin.testWebDavConnection({
+            url: d.url.trim(),
+            username: d.username.trim(),
+            password: d.password,
+            rootDir: d.rootDir.trim() || "selfsync",
+          });
           new Notice(`SelfSync: ${res.message}`);
           b.setButtonText("Test connection").setDisabled(false);
         });
@@ -153,27 +208,27 @@ export class SelfSyncSettingTab extends PluginSettingTab {
     const securitySetting = new Setting(containerEl)
       .setName("Backend security")
       .setDesc(securityBase)
-      .addDropdown((d) =>
-        d
+      .addDropdown((dd) =>
+        dd
           .addOption("keychain", "Device keychain (recommended)")
           .addOption("obfuscated", "Obfuscated")
           .addOption("plaintext", "Plaintext")
-          .setValue(this.plugin.settings.secretStorage)
-          .onChange(async (v) => {
-            this.plugin.settings.secretStorage = v as SecretStorageMode;
-            await this.plugin.saveSettings(); // re-writes the secrets in the new mode
-            this.display();
+          .setValue(d.secretStorage)
+          .onChange((v) => {
+            d.secretStorage = v as SecretStorageMode;
+            this.markDirty();
+            this.display(); // refresh the annotation for the new choice
           }),
       );
     // Probe whether real keychain encryption is available here, then annotate.
     void this.plugin.isKeychainAvailable().then((ok) => {
       securitySetting.setDesc(
         securityBase +
-          (this.plugin.settings.secretStorage === "keychain"
+          (d.secretStorage === "keychain"
             ? ok
               ? "Device keychain is active — real encryption via your OS keychain."
               : "Device keychain isn't available on this device — falling back to Obfuscated."
-            : this.plugin.settings.secretStorage === "obfuscated"
+            : d.secretStorage === "obfuscated"
               ? "Obfuscated: not stored as cleartext, but reversible — not real encryption."
               : "Plaintext: stored as-is. Anyone who can read the vault folder can read it."),
       );
@@ -188,14 +243,14 @@ export class SelfSyncSettingTab extends PluginSettingTab {
           "only ciphertext behind opaque keys. Set the same passphrase on every device.",
       )
       .addToggle((t) =>
-        t.setValue(this.plugin.settings.encryptionEnabled).onChange(async (v) => {
-          this.plugin.settings.encryptionEnabled = v;
-          await this.plugin.saveSettings();
+        t.setValue(d.encryptionEnabled).onChange((v) => {
+          d.encryptionEnabled = v;
+          this.markDirty();
           this.display(); // reveal / hide the passphrase field
         }),
       );
 
-    if (this.plugin.settings.encryptionEnabled) {
+    if (d.encryptionEnabled) {
       new Setting(containerEl)
         .setName("Encryption passphrase")
         .setDesc(
@@ -206,13 +261,16 @@ export class SelfSyncSettingTab extends PluginSettingTab {
         .addText((t) => {
           t.inputEl.type = "password";
           t.setPlaceholder("a strong, memorable passphrase")
-            .setValue(this.plugin.settings.encryptionPassphrase)
-            .onChange(async (v) => {
-              this.plugin.settings.encryptionPassphrase = v;
-              await this.plugin.saveSettings();
+            .setValue(d.encryptionPassphrase)
+            .onChange((v) => {
+              d.encryptionPassphrase = v;
+              this.markDirty();
             });
         });
     }
+
+    this.saveBarEl = containerEl.createDiv();
+    this.renderSaveBar(this.saveBarEl);
 
     new Setting(containerEl)
       .setName("Sync Obsidian config folder (.obsidian)")
@@ -293,6 +351,57 @@ export class SelfSyncSettingTab extends PluginSettingTab {
       });
 
     if (Platform.isDesktopApp) this.renderGitSettings(containerEl);
+  }
+
+  /** Render the Save/Revert bar for the connection block, reflecting `dirty`. */
+  private renderSaveBar(el: HTMLElement): void {
+    el.empty();
+    const syncing = this.plugin.isSyncing();
+    const setting = new Setting(el)
+      .setName("Connection settings")
+      .setDesc(
+        this.dirty
+          ? syncing
+            ? "You have unsaved changes. Save is disabled while a sync is running — try again in a moment."
+            : "You have unsaved changes. Click Save to apply them (this is what the next sync will use)."
+          : "No unsaved changes.",
+      );
+    setting.addButton((b) => {
+      b.setButtonText("Save").setCta().setDisabled(!this.dirty || syncing);
+      b.onClick(() => void this.saveConnection());
+    });
+    if (this.dirty) {
+      setting.addButton((b) => b.setButtonText("Revert").onClick(() => this.revertConnection()));
+    }
+  }
+
+  /** Apply the staged connection/encryption edits to the live settings. */
+  private async saveConnection(): Promise<void> {
+    if (this.plugin.isSyncing()) {
+      new Notice("SelfSync: a sync is in progress — try again in a moment.");
+      return;
+    }
+    const d = this.draft!;
+    const s = this.plugin.settings;
+    s.webdav.url = d.url.trim();
+    s.webdav.username = d.username.trim();
+    s.webdav.password = d.password;
+    s.webdav.rootDir = d.rootDir.trim() || "selfsync";
+    s.secretStorage = d.secretStorage;
+    s.encryptionEnabled = d.encryptionEnabled;
+    s.encryptionPassphrase = d.encryptionPassphrase;
+    await this.plugin.saveSettings();
+    this.dirty = false;
+    this.initDraft(); // re-sync the draft to the normalized, saved values
+    new Notice("SelfSync: connection settings saved.");
+    this.display();
+  }
+
+  /** Discard the staged edits and reset the fields to the saved values. */
+  private revertConnection(): void {
+    this.initDraft();
+    this.dirty = false;
+    this.display();
   }
 
   private renderGitSettings(containerEl: HTMLElement): void {

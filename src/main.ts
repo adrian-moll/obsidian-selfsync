@@ -270,8 +270,10 @@ export default class SelfSyncPlugin extends Plugin {
   // --- Connection tests ------------------------------------------------------
 
   /** Validate the WebDAV endpoint + credentials (for the settings/panel button). */
-  async testWebDavConnection(): Promise<{ ok: boolean; message: string }> {
-    const backend = this.buildBackend();
+  async testWebDavConnection(override?: SelfSyncSettings["webdav"]): Promise<{ ok: boolean; message: string }> {
+    // `override` lets the settings tab test the values currently typed (draft),
+    // before they've been saved into the active settings.
+    const backend = this.buildBackend(override);
     if (!backend) return { ok: false, message: "WebDAV not configured — set a URL first." };
     try {
       await backend.testConnection();
@@ -479,16 +481,21 @@ export default class SelfSyncPlugin extends Plugin {
     return this.settings.webdav.url ? "WebDAV" : "WebDAV (not configured)";
   }
 
-  private buildBackend(): StorageBackend | null {
-    const s = this.settings;
-    if (!s.webdav.url) return null;
+  private buildBackend(override?: SelfSyncSettings["webdav"]): StorageBackend | null {
+    const w = override ?? this.settings.webdav;
+    if (!w.url) return null;
     return new WebDavBackend({
-      baseUrl: s.webdav.url,
-      username: s.webdav.username,
-      password: s.webdav.password,
-      rootDir: s.webdav.rootDir || "selfsync",
+      baseUrl: w.url,
+      username: w.username,
+      password: w.password,
+      rootDir: w.rootDir || "selfsync",
       http: obsidianHttp,
     });
+  }
+
+  /** Whether a sync is currently in flight (used by the settings tab). */
+  isSyncing(): boolean {
+    return this.store.get().status === "syncing";
   }
 
   /**
