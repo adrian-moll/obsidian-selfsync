@@ -7,6 +7,8 @@
 import git from "isomorphic-git";
 import nodeHttp from "isomorphic-git/http/node";
 import * as nodeFs from "fs";
+import * as nodeHttpMod from "http";
+import * as nodeHttpsMod from "https";
 import * as path from "path";
 
 const DEFAULT_BRANCH = "main";
@@ -14,12 +16,20 @@ const DEFAULT_BRANCH = "main";
 // HTTP push is weak on large packs — a single big push (e.g. a first backup with
 // large attachments) can stall/reset — so we keep each push a digestible size.
 const DEFAULT_MAX_PUSH_BYTES = 25 * 1024 * 1024;
-// Hard ceiling per HTTP request. isomorphic-git's node client (simple-get) sets
-// no socket timeout and ignores its `signal`, so a stalled receive-pack POST
-// hangs forever — which prevents the resumable per-commit retry from ever
-// kicking in. Bounding each request turns a hang into a fast, resumable error:
-// the commits that landed keep the remote advanced, so the next cycle resumes.
+// Socket idle timeout per HTTP request. isomorphic-git passes NO agent to its
+// node client, so git requests fall through to the environment's global agent —
+// under Obsidian/Electron that has a short (~5s) socket timeout, which fires
+// while the server is still processing a freshly-uploaded pack and aborts the
+// push ("Request timed out") long before any large push can finish. We inject
+// our own keep-alive agents (below) carrying THIS timeout instead, so a slow
+// server response no longer kills the push. A genuine stall still errors after
+// this bound, and pushIncremental resumes from wherever the remote landed.
 const HTTP_TIMEOUT_MS = 120_000;
+
+// Dedicated keep-alive agents for git HTTP, so pushes use OUR socket timeout
+// (HTTP_TIMEOUT_MS) rather than the environment's short global-agent default.
+const gitHttpAgent = new nodeHttpMod.Agent({ keepAlive: true, timeout: HTTP_TIMEOUT_MS });
+const gitHttpsAgent = new nodeHttpsMod.Agent({ keepAlive: true, timeout: HTTP_TIMEOUT_MS });
 
 export interface GitConfig {
   /** Absolute path to the vault (FileSystemAdapter.getBasePath()). */
@@ -238,12 +248,17 @@ export class GitBackup {
       request: async (req: Parameters<typeof nodeHttp.request>[0]) => {
         const start = Date.now();
         let where = req.url;
+        let secure = false;
         try {
           const u = new URL(req.url);
           where = u.pathname + u.search;
+          secure = u.protocol === "https:";
         } catch {
           /* keep full url */
         }
+        // Force our own keep-alive agent so the request uses HTTP_TIMEOUT_MS, not
+        // the environment's short global-agent socket timeout (see above).
+        (req as { agent?: unknown }).agent = secure ? gitHttpsAgent : gitHttpAgent;
         if (log) log(`http ${req.method} ${where} started…`);
         let timer: ReturnType<typeof setTimeout> | undefined;
         try {
