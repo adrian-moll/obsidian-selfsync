@@ -157,14 +157,21 @@ export async function scanVault(
     if (exclude(path)) continue;
     const st = await vault.stat(path);
     if (!st) continue;
-    // Guard BEFORE readBinary so an oversized file is never materialized in memory.
-    if (maxFileBytes > 0 && st.size > maxFileBytes) {
-      onSkipLarge?.(path, st.size);
-      continue;
-    }
+    // Unchanged since the last sync (size + mtime match) → reuse the stored hash
+    // with NO read. This MUST come before the size guard: a large file that was
+    // merely DOWNLOADED here (never edited) then reconciles to a no-op instead of
+    // being reported "skipped (too large)" on every sync, and large remote
+    // updates/deletes still propagate to this device.
     const prior = base?.get(path);
     if (prior && prior.size === st.size && prior.mtime === st.mtime) {
       out.set(path, { path, contentHash: prior.contentHash, size: st.size, mtime: st.mtime });
+      continue;
+    }
+    // New or locally-changed: we must READ it to hash. Guard BEFORE readBinary so
+    // an oversized file we'd have to upload is never materialized in memory — it's
+    // left in place on all sides (never read, never propagated, never deleted).
+    if (maxFileBytes > 0 && st.size > maxFileBytes) {
+      onSkipLarge?.(path, st.size);
       continue;
     }
     const data = await vault.readBinary(path);
