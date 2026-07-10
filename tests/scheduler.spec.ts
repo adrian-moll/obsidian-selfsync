@@ -1,15 +1,31 @@
 import { describe, expect, it } from "vitest";
 import { SyncScheduler, type Timers } from "../src/engine/scheduler.js";
 
-/** Deterministic fake timers: capture callbacks and fire them on demand. */
+/** Deterministic fake timers: capture callbacks and fire them on demand, with a
+ *  controllable clock for cooldown tests (delays are recorded per timeout). */
 class FakeTimers implements Timers {
   private id = 0;
-  timeouts = new Map<number, () => void>();
+  clock = 0;
+  timeouts = new Map<number, { fn: () => void; at: number }>();
   intervals = new Map<number, () => void>();
 
-  setTimeout(fn: () => void): unknown {
+  now(): number {
+    return this.clock;
+  }
+  /** Advance the clock and fire any timeouts whose deadline has passed. */
+  advance(ms: number): void {
+    this.clock += ms;
+    for (const [id, t] of [...this.timeouts]) {
+      if (t.at <= this.clock) {
+        this.timeouts.delete(id);
+        t.fn();
+      }
+    }
+  }
+
+  setTimeout(fn: () => void, ms: number): unknown {
     const id = ++this.id;
-    this.timeouts.set(id, fn);
+    this.timeouts.set(id, { fn, at: this.clock + ms });
     return id;
   }
   clearTimeout(h: unknown): void {
@@ -25,9 +41,9 @@ class FakeTimers implements Timers {
   }
 
   fireTimeouts(): void {
-    const fns = [...this.timeouts.values()];
+    const entries = [...this.timeouts.values()];
     this.timeouts.clear();
-    fns.forEach((f) => f());
+    entries.forEach((t) => t.fn());
   }
   fireIntervalOnce(): void {
     [...this.intervals.values()].forEach((f) => f());
@@ -124,5 +140,53 @@ describe("SyncScheduler", () => {
 
     s.stopInterval();
     expect(timers.intervals.size).toBe(0);
+  });
+
+  it("rate-limits automatic triggers to one per cooldown window", async () => {
+    const d = deferredRun();
+    const timers = new FakeTimers();
+    timers.clock = 1_000_000; // like production: real clock ≫ 0, so the first run isn't deferred
+    const s = new SyncScheduler(d.run, timers);
+    s.setCooldownMs(1000);
+
+    // First auto trigger runs immediately (last run was "never").
+    s.requestAuto("interval");
+    await flush();
+    expect(d.calls).toBe(1);
+    d.finishNext();
+    await flush();
+
+    // More auto triggers within the cooldown window do NOT run yet…
+    s.requestAuto("background");
+    s.requestAuto("background");
+    await flush();
+    expect(d.calls).toBe(1);
+
+    // …they coalesce into a single run once the cooldown elapses.
+    timers.advance(1000);
+    await flush();
+    expect(d.calls).toBe(2);
+    d.finishNext();
+    await flush();
+    expect(d.calls).toBe(2);
+  });
+
+  it("manual triggers bypass the cooldown", async () => {
+    const d = deferredRun();
+    const timers = new FakeTimers();
+    timers.clock = 1_000_000;
+    const s = new SyncScheduler(d.run, timers);
+    s.setCooldownMs(10_000);
+
+    s.requestAuto("interval"); // runs now
+    await flush();
+    d.finishNext();
+    await flush();
+    expect(d.calls).toBe(1);
+
+    void s.trigger("manual"); // within cooldown, but manual → runs immediately
+    await flush();
+    expect(d.calls).toBe(2);
+    d.finishNext();
   });
 });

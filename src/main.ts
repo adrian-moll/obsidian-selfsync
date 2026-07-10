@@ -46,8 +46,16 @@ interface PersistedData {
   syncState?: StateEntry[];
 }
 
-const CHANGE_DEBOUNCE_MS = 3000;
 const GIT_PUSH_THROTTLE_MS = 60_000;
+// Minimum gap between AUTOMATIC syncs (rate limit, battery). Manual "Sync now"
+// bypasses it. Longer on mobile — where battery/network matter most and
+// background/visibility events fire constantly. See SyncScheduler.setCooldownMs.
+const AUTO_SYNC_COOLDOWN_DESKTOP_MS = 30_000;
+const AUTO_SYNC_COOLDOWN_MOBILE_MS = 60_000;
+// Automatic Git backup (full-vault statusMatrix + commit) runs at most this
+// often. Only the PUSH was throttled before, so the expensive commit ran on
+// every WebDAV sync. Manual Git commands bypass this.
+const GIT_BACKUP_THROTTLE_MS = 5 * 60_000;
 const LOG_FILE_NAME = "selfsync.log";
 const LOG_MAX_BYTES = 1024 * 1024; // rotate past ~1 MB, keep one previous generation
 
@@ -94,6 +102,7 @@ export default class SelfSyncPlugin extends Plugin {
   private netRetries = 0;
   private gitBusy = false;
   private lastGitPushAt = 0;
+  private lastGitBackupAt = 0;
   private gitPushPending = false;
 
   async onload(): Promise<void> {
@@ -104,6 +113,9 @@ export default class SelfSyncPlugin extends Plugin {
     this.gitPushPending = this.settings.git.enabled;
     await this.initStateStore();
     this.scheduler = new SyncScheduler((trigger) => this.runSync(trigger));
+    this.scheduler.setCooldownMs(
+      Platform.isDesktopApp ? AUTO_SYNC_COOLDOWN_DESKTOP_MS : AUTO_SYNC_COOLDOWN_MOBILE_MS,
+    );
 
     this.registerView(
       VIEW_TYPE_SELFSYNC,
@@ -208,10 +220,12 @@ export default class SelfSyncPlugin extends Plugin {
     // onAutoSyncToggled).
     this.applyIntervalTrigger();
 
-    // Debounced on file change.
+    // Debounced on file change: sync only after editing has been quiet for
+    // `changeDebounceSeconds` (configurable), then rate-limited by the scheduler
+    // cooldown — so a long editing session doesn't sync on every brief pause.
     const onChange = () => {
       if (this.settings.autoSyncEnabled && this.settings.syncOnFileChange) {
-        this.scheduler.requestDebounced("change", CHANGE_DEBOUNCE_MS);
+        this.scheduler.requestDebounced("change", Math.max(1, this.settings.changeDebounceSeconds) * 1000);
       }
     };
     this.registerEvent(this.app.vault.on("modify", onChange));
@@ -219,18 +233,18 @@ export default class SelfSyncPlugin extends Plugin {
     this.registerEvent(this.app.vault.on("delete", onChange));
     this.registerEvent(this.app.vault.on("rename", onChange));
 
-    // Best-effort flush on quit / backgrounding (not guaranteed to run — the
-    // startup reconcile is what guarantees convergence). Skipped when auto-sync off.
+    // Best-effort flush on quit / backgrounding — routed through the cooldown so
+    // rapid app-switch/visibility events on a phone collapse to at most one sync
+    // (convergence is still guaranteed by the startup + interval syncs). The
+    // desktop `window.blur` trigger was removed: it fired on trivial focus loss
+    // (command palette, clicking away) and added little the others don't cover.
     this.registerEvent(
       this.app.workspace.on("quit", () => {
-        if (this.settings.autoSyncEnabled) void this.scheduler.trigger("quit");
+        if (this.settings.autoSyncEnabled) this.scheduler.requestAuto("quit");
       }),
     );
     this.registerDomEvent(document, "visibilitychange", () => {
-      if (document.hidden && this.settings.autoSyncEnabled) void this.scheduler.trigger("background");
-    });
-    this.registerDomEvent(window, "blur", () => {
-      if (this.settings.autoSyncEnabled) void this.scheduler.trigger("background");
+      if (document.hidden && this.settings.autoSyncEnabled) this.scheduler.requestAuto("background");
     });
   }
 
@@ -425,11 +439,18 @@ export default class SelfSyncPlugin extends Plugin {
 
   private async runGitBackup(reason: string, forcePush = false): Promise<void> {
     if (this.gitBusy) return;
+    // Rate-limit AUTOMATIC backups: committing runs a full-vault statusMatrix
+    // (hashes everything), so running it on every WebDAV sync is wasteful CPU.
+    // Manual commands and force-push (compaction) always proceed.
+    if (reason !== "manual" && !forcePush && Date.now() - this.lastGitBackupAt < GIT_BACKUP_THROTTLE_MS) {
+      return;
+    }
     const backup = await this.getGitBackup();
     if (!backup) {
       if (reason === "manual") new Notice("SelfSync: enable Git backup in settings (desktop only).");
       return;
     }
+    this.lastGitBackupAt = Date.now();
     this.gitBusy = true;
     try {
       const canPush = this.settings.git.push && !!this.settings.git.remoteUrl;
@@ -501,7 +522,7 @@ export default class SelfSyncPlugin extends Plugin {
           await adapter.write(canonicalPath, merged);
           await adapter.remove(conflictPath).catch(() => {});
           new Notice(`SelfSync: resolved ${canonicalPath}`);
-          this.scheduler.requestDebounced("resolve", 500);
+          this.scheduler.requestDebounced("resolve", 500, true); // bypass cooldown — user just resolved a conflict
         })();
       },
     ).open();
@@ -617,7 +638,7 @@ export default class SelfSyncPlugin extends Plugin {
         if (this.conflictRetries < 3) {
           this.conflictRetries++;
           this.logger.info(`Remote changed mid-sync — retrying (${this.conflictRetries}/3)`);
-          this.scheduler.requestDebounced("retry", 1500);
+          this.scheduler.requestDebounced("retry", 1500, true); // bypass cooldown — resolve a race promptly
         } else {
           this.logger.warn("Still contended after 3 retries — will sync on next change");
         }
@@ -677,7 +698,7 @@ export default class SelfSyncPlugin extends Plugin {
         if (this.netRetries === 0) this.logger.info("Offline — will retry when the connection returns");
         if (this.netRetries < 5) {
           this.netRetries++;
-          this.scheduler.requestDebounced("net-retry", 8000);
+          this.scheduler.requestDebounced("net-retry", 8000, true); // bypass cooldown — already backing off
         }
       } else {
         this.store.update({ status: "error", detail: "Error", lastError: msg });

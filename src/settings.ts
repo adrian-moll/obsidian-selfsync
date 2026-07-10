@@ -46,6 +46,9 @@ export interface SelfSyncSettings {
   syncOnStartup: boolean;
   syncIntervalMinutes: number;
   syncOnFileChange: boolean;
+  /** Seconds of editing quiet before an on-change sync fires (debounce). Higher =
+   *  fewer syncs while you're actively editing (better battery). */
+  changeDebounceSeconds: number;
   excludeGlobs: string[];
   /**
    * Upper bound (MB) on a file we hold WHOLE in memory: uploads, and the fallback
@@ -80,6 +83,7 @@ export const DEFAULT_SETTINGS: SelfSyncSettings = {
   syncOnStartup: true,
   syncIntervalMinutes: 5,
   syncOnFileChange: true,
+  changeDebounceSeconds: 10,
   excludeGlobs: [],
   maxFileMB: 50,
   debugLogging: false,
@@ -338,6 +342,23 @@ export class SelfSyncSettingTab extends PluginSettingTab {
               await this.plugin.saveSettings();
             }
           }),
+      );
+
+    new Setting(containerEl)
+      .setName("Sync delay after editing (seconds)")
+      .setDesc(
+        "Wait this long after you stop changing files before auto-syncing, so a long editing " +
+          "session doesn't sync on every brief pause (saves battery). Automatic syncs are also " +
+          "rate-limited internally. Manual 'Sync now' is always immediate. Default 10.",
+      )
+      .addText((t) =>
+        t.setValue(String(this.plugin.settings.changeDebounceSeconds)).onChange(async (v) => {
+          const n = Number(v);
+          if (Number.isFinite(n) && n >= 1) {
+            this.plugin.settings.changeDebounceSeconds = Math.floor(n);
+            await this.plugin.saveSettings();
+          }
+        }),
       );
 
     new Setting(containerEl)

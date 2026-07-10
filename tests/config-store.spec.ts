@@ -16,6 +16,7 @@ function makeSettings(over: Partial<SelfSyncSettings> = {}): SelfSyncSettings {
     syncOnStartup: true,
     syncIntervalMinutes: 12,
     syncOnFileChange: true,
+    changeDebounceSeconds: 10,
     excludeGlobs: ["**/*.tmp"],
     maxFileMB: 50,
     debugLogging: false,

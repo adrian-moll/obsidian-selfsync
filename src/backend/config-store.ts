@@ -29,6 +29,7 @@ export interface ExportedConfig {
   syncOnStartup: boolean;
   syncIntervalMinutes: number;
   syncOnFileChange: boolean;
+  changeDebounceSeconds: number;
   excludeGlobs: string[];
   maxFileMB: number;
   debugLogging: boolean;
@@ -46,6 +47,7 @@ export function buildExportConfig(s: SelfSyncSettings): ExportedConfig {
     syncOnStartup: s.syncOnStartup,
     syncIntervalMinutes: s.syncIntervalMinutes,
     syncOnFileChange: s.syncOnFileChange,
+    changeDebounceSeconds: s.changeDebounceSeconds,
     excludeGlobs: [...s.excludeGlobs],
     maxFileMB: s.maxFileMB,
     debugLogging: s.debugLogging,
@@ -91,6 +93,7 @@ export function applyImportedConfig(current: SelfSyncSettings, parsed: unknown):
     syncOnStartup: bool(p.syncOnStartup, current.syncOnStartup),
     syncIntervalMinutes: posNum(p.syncIntervalMinutes, current.syncIntervalMinutes),
     syncOnFileChange: bool(p.syncOnFileChange, current.syncOnFileChange),
+    changeDebounceSeconds: posNum(p.changeDebounceSeconds, current.changeDebounceSeconds),
     excludeGlobs: strArr(p.excludeGlobs, current.excludeGlobs),
     maxFileMB: nonNegInt(p.maxFileMB, current.maxFileMB),
     debugLogging: bool(p.debugLogging, current.debugLogging),
