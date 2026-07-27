@@ -1,0 +1,38 @@
+# Headless SelfSync client — syncs a vault directory against the WebDAV backend
+# with no Obsidian involved, so other containers (e.g. an agent) can read and
+# edit the vault on a shared volume.
+#
+# Build from the REPO ROOT so the bundle can be produced in the image:
+#   docker build -f docker/Dockerfile.cli -t selfsync-cli .
+
+FROM node:22-alpine AS build
+WORKDIR /build
+# Install deps against the lockfile first so this layer caches across source edits.
+COPY package.json package-lock.json* ./
+RUN npm ci
+COPY tsconfig.json esbuild.cli.config.mjs ./
+COPY src ./src
+# esbuild directly, not `npm run build:cli`: the image has no tests/ dir, and CI
+# already runs the typecheck.
+RUN node esbuild.cli.config.mjs production
+
+FROM node:22-alpine
+# No init wrapper is installed: the daemon registers its own SIGTERM/SIGINT
+# handlers, so `docker stop` reaches its shutdown path (a final sync) even as
+# PID 1. The compose file sets `init: true` for zombie reaping.
+WORKDIR /app
+COPY --from=build /build/dist/selfsync-cli.cjs /app/selfsync-cli.cjs
+
+# The vault is shared with other containers; /state is this device's own (State
+# DB, merge bases, device id) and must never live inside the vault.
+ENV SELFSYNC_VAULT_DIR=/vault \
+    SELFSYNC_STATE_DIR=/state
+RUN mkdir -p /vault /state && chown -R node:node /vault /state
+USER node
+VOLUME ["/vault", "/state"]
+
+HEALTHCHECK --interval=60s --timeout=5s --start-period=30s \
+  CMD node -e "const h=require('/state/health.json');process.exit(h.status==='error'?1:0)"
+
+ENTRYPOINT ["node", "/app/selfsync-cli.cjs"]
+CMD ["daemon"]

@@ -35,12 +35,36 @@ We deliberately keep the backend a **dumb blob store** and do all merging in the
 engine — with E2EE the content is opaque, so a server could not merge it anyway
 (see `decisions.md`, D4).
 
+## Two hosts, one engine
+
+The engine has no Obsidian dependency, so it runs in two places:
+
+| | Obsidian plugin | Headless client (Docker) |
+| --- | --- | --- |
+| Entry point | `src/main.ts` | `src/headless/cli.ts` → `daemon.ts` |
+| Vault I/O | `ObsidianVaultAdapter` (`DataAdapter`) | `NodeVaultAdapter` (`node:fs`) |
+| Merge bases | `ObsidianBaseStore` (plugin folder) | `NodeBaseStore` (`<state>/base`) |
+| State DB | IndexedDB, `data.json` fallback | `JsonStateStore` → `<state>/state.json` |
+| HTTP | `obsidianHttp` (`requestUrl`) | `fetchHttp` (global `fetch`) |
+| Change trigger | `vault.on(...)` events | `fs.watch` (`src/headless/watch.ts`) |
+| Settings | `data.json` + settings tab | environment (`src/headless/config.ts`) |
+| Build | `esbuild.config.mjs` → `main.js` | `esbuild.cli.config.mjs` → `dist/selfsync-cli.cjs` |
+
+Everything else — engine, reconciler, merge, manifest, scheduler, exclusions,
+backends, crypto — is shared verbatim. Two pieces both hosts must agree on are
+factored out rather than duplicated: `encryptedContext` (`src/backend/context.ts`)
+decides backend wrapping *and* blob naming together, and `buildExcludePatterns`
+decides what is invisible to reconciliation. The headless build treats an
+`obsidian`/`electron` import as a **build error**, so the boundary can't rot
+silently. See `docs/user/06-headless.md` for operating it.
+
 ## Platform boundaries
 
 - **Sync path** (all platforms): uses only the Obsidian `DataAdapter` for vault
   I/O and **WebCrypto** for hashing/encryption. Both are available on mobile.
 - **Git layer** (desktop only): the only place Node/`isomorphic-git` is used;
-  gated by `Platform.isDesktopApp` and hidden on mobile.
+  gated by `Platform.isDesktopApp` and hidden on mobile. It is **not** available
+  headless — it is a commit+push backup, not a sync channel (no fetch/merge).
 
 ## Data flow (one sync cycle)
 

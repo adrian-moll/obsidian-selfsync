@@ -5,6 +5,9 @@ import { SyncEngine, type SyncOptions } from "../../src/engine/engine.js";
 import { MirrorNaming, type BlobNaming } from "../../src/engine/naming.js";
 import { MemoryBaseStore } from "../../src/engine/base-store.js";
 import type { StorageBackend } from "../../src/backend/storage-backend.js";
+import { NodeVaultAdapter } from "../../src/vault/node-vault-adapter.js";
+import { NodeBaseStore } from "../../src/vault/node-base-store.js";
+import { createFileStateStore } from "../../src/headless/state-file.js";
 
 export const enc = (s: string): ArrayBuffer => {
   const v = new TextEncoder().encode(s);
@@ -41,5 +44,48 @@ export function makeDevice(
     vault,
     sync: (opts?: Partial<SyncOptions>) =>
       engine.sync({ timestampIso: `2026-01-01T00-00-${String(n++).padStart(2, "0")}Z`, exclude, ...opts }),
+  };
+}
+
+export interface NodeSimDevice {
+  vault: NodeVaultAdapter;
+  sync: (opts?: Partial<SyncOptions>) => ReturnType<SyncEngine["sync"]>;
+}
+
+/**
+ * A simulated device backed by the REAL headless stack: Node-fs vault, on-disk
+ * merge bases, and the file-backed State DB. Same engine and backend as
+ * makeDevice, so the two can be paired in one simulation to prove the container
+ * client and the plugin client converge.
+ *
+ * `state` must be outside `vault` (the daemon enforces this too) — inside, the
+ * State DB and bases would be picked up as vault content.
+ */
+export async function makeNodeDevice(
+  backend: StorageBackend,
+  id: string,
+  dirs: { vault: string; state: string },
+  naming: BlobNaming = new MirrorNaming(),
+  exclude?: (path: string) => boolean,
+): Promise<NodeSimDevice> {
+  const vault = new NodeVaultAdapter({ root: dirs.vault });
+  const engine = new SyncEngine({
+    vault,
+    backend,
+    state: await createFileStateStore(dirs.state),
+    deviceId: id,
+    naming,
+    baseStore: new NodeBaseStore(dirs.state),
+  });
+  let n = 0;
+  return {
+    vault,
+    sync: (opts?: Partial<SyncOptions>) =>
+      engine.sync({
+        timestampIso: `2026-01-01T00-00-${String(n++).padStart(2, "0")}Z`,
+        useMtimeShortcut: true,
+        exclude,
+        ...opts,
+      }),
   };
 }

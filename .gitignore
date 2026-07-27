@@ -7,6 +7,7 @@ node_modules/
 # Build output (attached to GitHub releases, not committed)
 main.js
 *.js.map
+dist/
 
 # Editor / OS
 .DS_Store

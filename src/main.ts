@@ -28,6 +28,7 @@ import { ManifestStore } from "./engine/manifest-store.js";
 import { cleanupExcluded } from "./engine/cleanup.js";
 import { SyncScheduler } from "./engine/scheduler.js";
 import { type BlobNaming, MirrorNaming, OpaqueNaming } from "./engine/naming.js";
+import { encryptedContext } from "./backend/context.js";
 import { buildExcludePatterns, makeExcluder } from "./engine/exclude.js";
 import { WebDavBackend } from "./backend/webdav-backend.js";
 import { CryptoBackend } from "./backend/crypto-backend.js";
@@ -37,7 +38,9 @@ import { utf8 } from "./backend/http.js";
 import { obsidianHttp } from "./backend/obsidian-http.js";
 import type { StorageBackend } from "./backend/storage-backend.js";
 import { decodeSecret, encodeSecret, type KeychainProvider } from "./util/secret-store.js";
-import type { Op, StateEntry } from "./types.js";
+import { isTransientNetworkError } from "./util/errors.js";
+import { summarizeOps } from "./util/describe-ops.js";
+import type { StateEntry } from "./types.js";
 
 interface PersistedData {
   settings: SelfSyncSettings;
@@ -58,36 +61,6 @@ const AUTO_SYNC_COOLDOWN_MOBILE_MS = 60_000;
 const GIT_BACKUP_THROTTLE_MS = 5 * 60_000;
 const LOG_FILE_NAME = "selfsync.log";
 const LOG_MAX_BYTES = 1024 * 1024; // rotate past ~1 MB, keep one previous generation
-
-/** DNS/connectivity failures — expected right after a mobile app resume. */
-function isTransientNetworkError(message: string): boolean {
-  return /UnknownHostException|Unable to resolve host|No address associated|ERR_NAME_NOT_RESOLVED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ECONNABORTED|Failed to fetch|NetworkError|net::ERR|getaddrinfo|ERR_INTERNET_DISCONNECTED|ERR_NETWORK|socket hang up/i.test(
-    message,
-  );
-}
-
-function describeOp(o: Op): string {
-  switch (o.kind) {
-    case "upload":
-      return `↑ ${o.path}`;
-    case "download":
-      return `↓ ${o.path}`;
-    case "deleteLocal":
-      return `del-local ${o.path}`;
-    case "deleteRemote":
-      return `del-remote ${o.path}`;
-    case "conflict":
-      return `concurrent-edit ${o.path}`;
-    case "move":
-      return `move ${o.from} → ${o.to}`;
-  }
-}
-
-function summarizeOps(ops: Op[]): string {
-  const shown = ops.slice(0, 6).map(describeOp);
-  const extra = ops.length > shown.length ? ` (+${ops.length - shown.length} more)` : "";
-  return shown.join(", ") + extra;
-}
 
 export default class SelfSyncPlugin extends Plugin {
   settings!: SelfSyncSettings;
@@ -558,10 +531,9 @@ export default class SelfSyncPlugin extends Plugin {
    * sync BEFORE any writes rather than producing garbage (UC10).
    */
   private async encryptedContext(inner: StorageBackend): Promise<{ backend: StorageBackend; naming: BlobNaming }> {
-    if (!this.settings.encryptionEnabled) return { backend: inner, naming: new MirrorNaming() };
-    const { key, chunkSize, initialized } = await unlock(inner, this.settings.encryptionPassphrase);
-    if (initialized) this.logger.info("E2EE initialized on this backend (crypto header written)");
-    return { backend: new CryptoBackend(inner, key, chunkSize), naming: new OpaqueNaming() };
+    const ctx = await encryptedContext(inner, this.settings);
+    if (ctx.initialized) this.logger.info("E2EE initialized on this backend (crypto header written)");
+    return ctx;
   }
 
   /** One sync cycle, invoked only via the scheduler (single-flight). */

@@ -23,3 +23,6 @@ jobs:
       - run: npm run typecheck
       - run: npm test # live kDrive tests skip without credentials
       - run: npm run build
+      # Also guards that nothing on the headless path imports obsidian/electron:
+      # esbuild.cli.config.mjs turns such an import into a build error.
+      - run: node esbuild.cli.config.mjs production

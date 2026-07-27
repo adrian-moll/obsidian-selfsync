@@ -25,6 +25,8 @@ What you get:
    and Git backup.
 4. [Encryption](04-encryption.md) — what it will protect *(not yet available)*.
 5. [Troubleshooting](05-troubleshooting.md) — common messages and fixes.
+6. [Headless sync](06-headless.md) — run sync in Docker, without Obsidian, so
+   scripts or agents can work on the vault as normal files.
 
 > Looking for how it works under the hood? See the
 > [Developer guide](../developer/).

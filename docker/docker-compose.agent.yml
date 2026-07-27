@@ -1,0 +1,57 @@
+# Headless vault sync + an agent container that works on the same vault.
+#
+#   cd docker && cp .env.agent.example .env && $EDITOR .env
+#   docker compose -f docker-compose.agent.yml up -d
+#
+# `selfsync` keeps the shared `vault` volume converged with the WebDAV backend —
+# the same backend the Obsidian plugin uses, as a peer device with its own device
+# id. `agent` mounts the same volume, so whatever it writes is picked up by the
+# watcher and pushed within `debounce + cooldown` (~40s by default), and whatever
+# you write in Obsidian appears here on the next cycle.
+#
+# The vault must already be initialized by a plugin device (or one `sync-once`
+# run): creating the very first manifest is not conditional-write guarded, so two
+# clients bootstrapping an empty rootDir simultaneously can lose an update.
+
+services:
+  selfsync:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.cli
+    image: selfsync-cli
+    container_name: selfsync-cli
+    restart: unless-stopped
+    init: true # reap zombies; the daemon handles SIGTERM itself
+    environment:
+      SELFSYNC_WEBDAV_URL: ${SELFSYNC_WEBDAV_URL}
+      SELFSYNC_WEBDAV_USER: ${SELFSYNC_WEBDAV_USER}
+      SELFSYNC_WEBDAV_PASS: ${SELFSYNC_WEBDAV_PASS}
+      SELFSYNC_WEBDAV_ROOT_DIR: ${SELFSYNC_WEBDAV_ROOT_DIR:-selfsync}
+      # Set ONLY if the vault is end-to-end encrypted; must match the plugin's
+      # passphrase exactly, or the client refuses to sync rather than write garbage.
+      SELFSYNC_ENCRYPTION_PASSPHRASE: ${SELFSYNC_ENCRYPTION_PASSPHRASE:-}
+      SELFSYNC_SYNC_INTERVAL_MINUTES: ${SELFSYNC_SYNC_INTERVAL_MINUTES:-5}
+      SELFSYNC_CHANGE_DEBOUNCE_SECONDS: ${SELFSYNC_CHANGE_DEBOUNCE_SECONDS:-10}
+      SELFSYNC_MAX_FILE_MB: ${SELFSYNC_MAX_FILE_MB:-50}
+      SELFSYNC_DEBUG: ${SELFSYNC_DEBUG:-false}
+    volumes:
+      - vault:/vault
+      - selfsync-state:/state # device-local: State DB, merge bases, device id
+    stop_grace_period: 60s # let the final sync finish before SIGKILL
+
+  agent:
+    image: ${AGENT_IMAGE:-node:22}
+    container_name: selfsync-agent
+    restart: unless-stopped
+    depends_on:
+      - selfsync
+    working_dir: /vault
+    volumes:
+      - vault:/vault
+    # Replace with your agent's own command; this placeholder just keeps the
+    # container alive so you can `docker compose exec agent sh`.
+    command: ["sleep", "infinity"]
+
+volumes:
+  vault:
+  selfsync-state:

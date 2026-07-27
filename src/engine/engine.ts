@@ -10,7 +10,7 @@
  * commit is a harmless orphan (GC later). Local State DB updates are applied only
  * AFTER a successful commit.
  */
-import type { FileMeta, Manifest, ManifestEntry, Op } from "../types.js";
+import type { FileMeta, Manifest, ManifestEntry, Op, StateEntry } from "../types.js";
 import type { VaultAdapter } from "../vault/vault-adapter.js";
 import { ConditionalWriteError, type StorageBackend } from "../backend/storage-backend.js";
 import type { StateStore } from "./state-db.js";
@@ -250,6 +250,11 @@ export class SyncEngine {
       );
     };
 
+    // Adopt a merge base for files that are ALREADY identical on both sides but
+    // absent from the State DB. Must run BEFORE reconcile consumes the base.
+    const adopted = await this.adoptInSyncBases(local, manifest, effectiveExclude);
+    if (adopted) log(`adopted ${adopted} already-in-sync file(s) into the State DB`);
+
     phase("Reconciling…");
     let ops = await reconcileAgainst(manifest);
     log(`reconciled: ${ops.length} ops`);
@@ -450,6 +455,64 @@ export class SyncEngine {
     if (await vault.exists(path)) await vault.remove(path).catch(() => {});
     await vault.rename(staging, path);
     await vault.remove(sidecar).catch(() => {});
+  }
+
+  /**
+   * Record the merge base for files whose local content ALREADY matches the
+   * remote manifest but which have no (or a stale) State DB entry.
+   *
+   * Without this such a file has no common ancestor, so the reconciler sees
+   * "both changed" the moment it is edited on either side and keeps both copies
+   * — a conflict copy for an edit nobody conflicted over. It happens whenever
+   * the State DB and the vault content disagree about history: after "reset sync
+   * state", after a lost/corrupt state file, when a device starts on a vault
+   * folder that was copied rather than downloaded, and after a cycle that lost
+   * the manifest race (which discards its state updates).
+   *
+   * Purely local — no transfer and no manifest write — so it is persisted
+   * immediately rather than being tied to the manifest commit that may follow.
+   * Returns the number of files adopted (0 in the common case, so this is free
+   * on a healthy device).
+   */
+  private async adoptInSyncBases(
+    local: Map<string, FileMeta>,
+    manifest: Manifest,
+    exclude: (path: string) => boolean,
+  ): Promise<number> {
+    const { state, vault, baseStore } = this.deps;
+    const base = await state.toMap();
+    const pending: StateEntry[] = [];
+
+    for (const [path, meta] of local) {
+      if (exclude(path)) continue;
+      const entry = manifest.entries[path];
+      if (!entry || entry.deleted) continue;
+      if (entry.contentHash !== meta.contentHash) continue; // not actually in sync
+      const prior = base.get(path);
+      if (prior && !prior.deleted && prior.contentHash === meta.contentHash) continue; // base already known
+      pending.push({
+        path,
+        contentHash: meta.contentHash,
+        size: meta.size,
+        mtime: meta.mtime,
+        version: entry.version,
+        blobKey: entry.blobKey,
+      });
+    }
+    if (pending.length === 0) return 0;
+
+    state.beginBatch();
+    for (const entry of pending) {
+      await state.put(entry);
+      // Text files also need their CONTENT as the ancestor, or a later
+      // concurrent edit still can't 3-way merge. Local content equals remote
+      // here by definition, so the local read is the correct ancestor.
+      if (baseStore && isMergeableText(entry.path)) {
+        await baseStore.set(entry.path, await vault.readBinary(entry.path));
+      }
+    }
+    await state.flush();
+    return pending.length;
   }
 
   /** Read a small text file, or null if it doesn't exist. */
