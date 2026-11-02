@@ -40,7 +40,7 @@ services:
     stop_grace_period: 60s # let the final sync finish before SIGKILL
 
   agent:
-    image: ${AGENT_IMAGE:-node:22}
+    image: ${AGENT_IMAGE:-node:26}
     container_name: selfsync-agent
     restart: unless-stopped
     depends_on:

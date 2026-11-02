@@ -1,6 +1,5 @@
 {
   "compilerOptions": {
-    "baseUrl": ".",
     "module": "ESNext",
     "target": "ES2018",
     "moduleResolution": "Bundler",
@@ -14,6 +13,7 @@
     "esModuleInterop": true,
     "importHelpers": true,
     "skipLibCheck": true,
+    "types": ["node"],
     "lib": ["DOM", "ES2018", "ES2020"]
   },
   "include": ["src/**/*.ts", "tests/**/*.ts"]

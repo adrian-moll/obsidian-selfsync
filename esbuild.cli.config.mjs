@@ -39,7 +39,7 @@ const options = {
   bundle: true,
   platform: "node", // node builtins stay external automatically
   format: "cjs",
-  target: "node20",
+  target: "node26",
   plugins: [forbidAppImports],
   logLevel: "info",
   sourcemap: production ? false : "inline",
