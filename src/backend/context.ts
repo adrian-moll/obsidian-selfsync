@@ -15,7 +15,7 @@
  */
 import { type BlobNaming, MirrorNaming, OpaqueNaming } from "../engine/naming.js";
 import { CryptoBackend } from "./crypto-backend.js";
-import { unlock } from "./crypto-header.js";
+import { CRYPTO_HEADER_KEY, unlock } from "./crypto-header.js";
 import type { StorageBackend } from "./storage-backend.js";
 
 export interface EncryptionConfig {
@@ -30,8 +30,35 @@ export interface SyncContext {
   initialized: boolean;
 }
 
-export async function encryptedContext(inner: StorageBackend, cfg: EncryptionConfig): Promise<SyncContext> {
+/**
+ * The unlocked vault key, kept for a session. Unlocking costs a header download
+ * plus a deliberately slow key derivation (210k PBKDF2 rounds — noticeable on a
+ * phone, every sync). The cached key is reused only while the passphrase AND
+ * the backend's crypto header (by etag) are unchanged, so a re-keyed backend is
+ * never written with a stale key. Scope it to one backend (the caller resets it
+ * when the connection settings change).
+ */
+export interface KeyCache {
+  entry: { passphrase: string; headerEtag: string; key: CryptoKey; chunkSize: number } | null;
+}
+
+export async function encryptedContext(
+  inner: StorageBackend,
+  cfg: EncryptionConfig,
+  keyCache?: KeyCache,
+): Promise<SyncContext> {
   if (!cfg.encryptionEnabled) return { backend: inner, naming: new MirrorNaming(), initialized: false };
+  const cached = keyCache?.entry;
+  if (cached && cached.passphrase === cfg.encryptionPassphrase && inner.etag) {
+    const headerEtag = await inner.etag(CRYPTO_HEADER_KEY);
+    if (headerEtag && headerEtag === cached.headerEtag) {
+      return { backend: new CryptoBackend(inner, cached.key, cached.chunkSize), naming: new OpaqueNaming(), initialized: false };
+    }
+  }
   const { key, chunkSize, initialized } = await unlock(inner, cfg.encryptionPassphrase);
+  if (keyCache) {
+    const headerEtag = inner.etag ? await inner.etag(CRYPTO_HEADER_KEY) : null;
+    keyCache.entry = headerEtag ? { passphrase: cfg.encryptionPassphrase, headerEtag, key, chunkSize } : null;
+  }
   return { backend: new CryptoBackend(inner, key, chunkSize), naming: new OpaqueNaming(), initialized };
 }

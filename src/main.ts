@@ -24,12 +24,12 @@ import { ObsidianBaseStore } from "./vault/obsidian-base-store.js";
 import type { StateStore } from "./engine/state-db.js";
 import { createStateStore } from "./engine/indexeddb-state-store.js";
 import { SyncEngine } from "./engine/engine.js";
-import { ManifestStore } from "./engine/manifest-store.js";
+import { type ManifestCache, ManifestStore } from "./engine/manifest-store.js";
 import { cleanupExcluded } from "./engine/cleanup.js";
 import { SyncScheduler } from "./engine/scheduler.js";
 import { hasRealLocalChanges } from "./engine/dirty.js";
 import { type BlobNaming, MirrorNaming, OpaqueNaming } from "./engine/naming.js";
-import { encryptedContext } from "./backend/context.js";
+import { encryptedContext, type KeyCache } from "./backend/context.js";
 import { buildExcludePatterns, makeExcluder } from "./engine/exclude.js";
 import { WebDavBackend } from "./backend/webdav-backend.js";
 import { CryptoBackend } from "./backend/crypto-backend.js";
@@ -86,6 +86,10 @@ export default class SelfSyncPlugin extends Plugin {
   /** Paths the file events reported since the last sync started (possibly
    *  SelfSync's own writes — see hasRealLocalChanges). */
   private dirtyPaths = new Set<string>();
+  /** Reused sync backend + the session caches tied to it (see syncBackend). */
+  private cachedBackend: { id: string; backend: StorageBackend } | null = null;
+  private manifestCache: ManifestCache = { entry: null };
+  private keyCache: KeyCache = { entry: null };
 
   async onload(): Promise<void> {
     await this.loadPersisted();
@@ -210,6 +214,13 @@ export default class SelfSyncPlugin extends Plugin {
     // whether there is anything to flush.
     const onChange = (...paths: string[]) => {
       for (const p of paths) this.dirtyPaths.add(p);
+      // A save that lands while the app is hidden — typically Obsidian writing
+      // the note you were typing just AFTER you switched away — can't wait for
+      // the debounce: the OS suspends us within seconds. Push it now.
+      if (document.hidden) {
+        void this.flushLocalChanges("background");
+        return;
+      }
       if (this.settings.autoSyncEnabled && this.settings.syncOnFileChange) {
         this.scheduler.requestDebounced("change", Math.max(1, this.settings.changeDebounceSeconds) * 1000);
       }
@@ -552,6 +563,24 @@ export default class SelfSyncPlugin extends Plugin {
     });
   }
 
+  /**
+   * The backend for syncs, reused across them so its folder cache (which MKCOLs
+   * already ran) survives — a fresh backend per sync re-created every folder an
+   * upload touched. Rebuilt, together with the session caches that belong to
+   * it, whenever the connection settings change.
+   */
+  private syncBackend(): StorageBackend | null {
+    const w = this.settings.webdav;
+    const id = JSON.stringify([w.url, w.username, w.password, w.rootDir, this.settings.encryptionEnabled]);
+    if (this.cachedBackend?.id !== id) {
+      const backend = this.buildBackend();
+      this.cachedBackend = backend ? { id, backend } : null;
+      this.manifestCache.entry = null;
+      this.keyCache.entry = null;
+    }
+    return this.cachedBackend?.backend ?? null;
+  }
+
   /** Whether a sync is currently in flight (used by the settings tab). */
   isSyncing(): boolean {
     return this.store.get().status === "syncing";
@@ -566,15 +595,83 @@ export default class SelfSyncPlugin extends Plugin {
    * sync BEFORE any writes rather than producing garbage (UC10).
    */
   private async encryptedContext(inner: StorageBackend): Promise<{ backend: StorageBackend; naming: BlobNaming }> {
-    const ctx = await encryptedContext(inner, this.settings);
+    const ctx = await encryptedContext(inner, this.settings, this.keyCache);
     if (ctx.initialized) this.logger.info("E2EE initialized on this backend (crypto header written)");
     return ctx;
+  }
+
+  /**
+   * Cap only what we hold WHOLE in memory (uploads + non-streamed reads);
+   * downloads stream in chunks regardless of size. On mobile, clamp to a safe
+   * ceiling — a big file edited on the phone can't be chunk-uploaded (no ranged
+   * read API) and would OOM, so it's skipped with a warning instead.
+   */
+  private maxWholeFileBytes(): number {
+    const MB = 1024 * 1024;
+    const MOBILE_WHOLE_CAP = 20 * MB;
+    const cap = this.settings.maxFileMB > 0 ? this.settings.maxFileMB * MB : 0;
+    return Platform.isDesktopApp ? cap : cap > 0 ? Math.min(cap, MOBILE_WHOLE_CAP) : MOBILE_WHOLE_CAP;
+  }
+
+  /**
+   * Upload just `paths` (the edits made since the last sync) — the flush when
+   * the app closes or goes to the background. Leaves anything it can't do
+   * quickly (downloads, merges, a lost manifest race) for the next full sync,
+   * keeping those paths marked so the next resume / change sync picks them up.
+   */
+  private async quickPush(backend: StorageBackend, paths: string[], trigger: string): Promise<void> {
+    const keepDirty = () => paths.forEach((p) => this.dirtyPaths.add(p));
+    this.store.update({ status: "syncing", detail: `Uploading changes… (${trigger})`, lastError: null });
+    try {
+      const { backend: effBackend, naming } = await this.encryptedContext(backend);
+      const engine = new SyncEngine({
+        vault: new ObsidianVaultAdapter(this.app),
+        backend: effBackend,
+        state: this.stateStore,
+        deviceId: this.settings.deviceId,
+        naming,
+        baseStore: new ObsidianBaseStore(this.app),
+        manifestCache: this.manifestCache,
+      });
+      this.logger.debug(`Quick push (${trigger}): ${paths.length} changed path(s)`);
+      const res = await engine.pushLocalChanges(paths, {
+        timestampIso: new Date().toISOString(),
+        useMtimeShortcut: true,
+        exclude: makeExcluder(buildExcludePatterns(this.settings)),
+        maxFileBytes: this.maxWholeFileBytes(),
+        log: (m) => this.logger.debug(m),
+      });
+      // Re-mark everything: paths that were pushed now match the State DB and
+      // are ignored by hasLocalChanges; the rest still need a full sync.
+      keepDirty();
+      const status = this.store.get().conflicts.length ? "conflicts" : "idle";
+      if (res.conflict) {
+        this.logger.info("Quick push: remote changed meanwhile — the next sync merges it");
+        this.store.update({ status, detail: "Changes pending — will sync on return" });
+        return;
+      }
+      if (res.ops.length) this.logger.info(`Uploaded on ${trigger}: ${summarizeOps(res.ops)}`);
+      if (res.failed.length) this.logger.warn(`Quick push failed for: ${res.failed.slice(0, 4).join(", ")}`);
+      this.store.update({
+        status,
+        detail: "Idle",
+        lastSyncIso: res.ops.length ? new Date().toISOString() : this.store.get().lastSyncIso,
+        trackedFiles: await this.countTrackedFiles(),
+      });
+    } catch (e) {
+      keepDirty();
+      const msg = e instanceof Error ? e.message : String(e);
+      // Quiet on the way out: an interrupted network is expected when the OS
+      // suspends us; the next resume runs a full sync anyway.
+      this.logger.info(`Quick push on ${trigger} didn't finish (${msg}) — will sync on return`);
+      this.store.update({ status: "idle", detail: "Changes pending — will sync on return" });
+    }
   }
 
   /** One sync cycle, invoked only via the scheduler (single-flight). */
   private async runSync(trigger: string): Promise<void | "skipped"> {
     const encrypted = this.settings.encryptionEnabled;
-    const backend = this.buildBackend();
+    const backend = this.syncBackend();
     if (!backend) {
       this.store.update({ status: "idle", detail: "Not configured", backendLabel: this.backendLabel() });
       if (trigger === "manual") new Notice("SelfSync: configure the backend in settings first.");
@@ -595,6 +692,16 @@ export default class SelfSyncPlugin extends Plugin {
     this.dirtyPaths.clear();
     const keepDirty = () => dirtyAtStart.forEach((p) => this.dirtyPaths.add(p));
 
+    // Closing / backgrounding: the OS allows only seconds, so push just the
+    // edited paths instead of running a full sync.
+    if (trigger === "background" || trigger === "quit") {
+      if (dirtyAtStart.length === 0) return "skipped"; // a sync since the request covered them
+      await this.quickPush(backend, dirtyAtStart, trigger);
+      // Not a full sync (it pulled nothing): don't let it start the cooldown or
+      // suppress the full sync when the user comes back.
+      return "skipped";
+    }
+
     this.store.update({
       status: "syncing",
       detail: `Syncing… (${trigger})`,
@@ -613,6 +720,7 @@ export default class SelfSyncPlugin extends Plugin {
         deviceId: this.settings.deviceId,
         naming,
         baseStore: new ObsidianBaseStore(this.app),
+        manifestCache: this.manifestCache,
       });
       // Throttle UI updates to ~10/s so the fine-grained per-file/per-scan-file
       // callbacks below don't thrash the store; always let the final tick through.
@@ -627,14 +735,7 @@ export default class SelfSyncPlugin extends Plugin {
       const onProgress = (done: number, total: number) =>
         setDetail(`Syncing… ${done}/${total}`, done === total);
       const onPhase = (detail: string) => setDetail(detail);
-      // Cap only what we hold WHOLE in memory (uploads + non-streamed reads);
-      // downloads stream in chunks regardless of size. On mobile, clamp to a safe
-      // ceiling — a big file edited on the phone can't be chunk-uploaded (no ranged
-      // read API) and would OOM, so it's skipped with a warning instead.
-      const MB = 1024 * 1024;
-      const MOBILE_WHOLE_CAP = 20 * MB;
-      const cap = this.settings.maxFileMB > 0 ? this.settings.maxFileMB * MB : 0;
-      const maxFileBytes = Platform.isDesktopApp ? cap : cap > 0 ? Math.min(cap, MOBILE_WHOLE_CAP) : MOBILE_WHOLE_CAP;
+      const maxFileBytes = this.maxWholeFileBytes();
       this.logger.debug(`Sync start (${trigger}); maxFileMB=${this.settings.maxFileMB}`);
       const res = await engine.sync({
         timestampIso: new Date().toISOString(),

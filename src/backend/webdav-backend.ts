@@ -15,6 +15,7 @@ import {
   type ReadResult,
   type RemoteEntry,
   type StorageBackend,
+  type WriteOptions,
 } from "./storage-backend.js";
 import { basicAuth, type HttpClient, utf8 } from "./http.js";
 
@@ -218,17 +219,25 @@ export class WebDavBackend implements StorageBackend {
   }
 
   async readWithMeta(key: string): Promise<ReadResult | null> {
+    // Always source the etag from PROPFIND <getetag> — the strong value that
+    // If-Match compares against (validated in spike S2). A GET response's ETag
+    // header is unreliable across servers/clients (e.g. kDrive via Obsidian's
+    // requestUrl returns a different value), which caused 412s on manifest commit.
+    // Fetch it BEFORE the data: if another device writes in between, we hold
+    // newer content with an older etag, so our next conditional write fails
+    // safely (412 → reload). The reverse order paired older content with the
+    // newer etag, letting that write silently overwrite the other device's.
+    const etag = (await this.fetchEtag(key)) ?? undefined;
     const res = await this.opts.http({ method: "GET", url: this.urlFor(key), headers: this.headers() });
     if (res.status === 404) return null;
     if (res.status < 200 || res.status >= 300) {
       throw new Error(`WebDAV GET ${key} failed: HTTP ${res.status}`);
     }
-    // Always source the etag from PROPFIND <getetag> — the strong value that
-    // If-Match compares against (validated in spike S2). A GET response's ETag
-    // header is unreliable across servers/clients (e.g. kDrive via Obsidian's
-    // requestUrl returns a different value), which caused 412s on manifest commit.
-    const etag = (await this.fetchEtag(key)) ?? undefined;
     return { data: res.body, etag };
+  }
+
+  async etag(key: string): Promise<string | null> {
+    return this.fetchEtag(key);
   }
 
   async head(key: string): Promise<{ size: number; acceptRanges: boolean; etag?: string } | null> {
@@ -267,15 +276,28 @@ export class WebDavBackend implements StorageBackend {
     return res.body;
   }
 
-  async write(key: string, data: ArrayBuffer, prevEtag?: string): Promise<string> {
+  async write(key: string, data: ArrayBuffer, prevEtag?: string, opts?: WriteOptions): Promise<string> {
     await this.ensureParents(key);
     const extra: Record<string, string> = { "Content-Type": "application/octet-stream" };
     if (prevEtag !== undefined) extra["If-Match"] = prevEtag;
-    const res = await this.opts.http({ method: "PUT", url: this.urlFor(key), headers: this.headers(extra), body: data });
+    const put = () =>
+      this.opts.http({ method: "PUT", url: this.urlFor(key), headers: this.headers(extra), body: data });
+    let res = await put();
+    if (res.status === 409) {
+      // 409 = a parent collection is missing. The folder cache outlives a sync
+      // (the backend is reused), so another device may have pruned a folder we
+      // remember creating — forget the cache, re-create the parents, retry once.
+      this.ensuredDirs.clear();
+      this.rootEnsured = false;
+      await this.ensureParents(key);
+      res = await put();
+    }
     if (res.status === 412) throw new ConditionalWriteError(key);
     if (res.status < 200 || res.status >= 300) {
       throw new Error(`WebDAV PUT ${key} failed: HTTP ${res.status}`);
     }
+    // Content blobs don't need their etag — skip the extra PROPFIND round-trip.
+    if (opts?.returnEtag === false) return "";
     // kDrive does not return an ETag on PUT — fetch it explicitly.
     const putEtag = res.headers["etag"];
     return (await this.fetchEtag(key)) ?? (putEtag ? normalizeEtag(putEtag) : "");
@@ -329,11 +351,20 @@ export class WebDavBackend implements StorageBackend {
 
   async move(from: string, to: string): Promise<void> {
     await this.ensureParents(to);
-    const res = await this.opts.http({
-      method: "MOVE",
-      url: this.urlFor(from),
-      headers: this.headers({ Destination: this.urlFor(to), Overwrite: "T" }),
-    });
+    const doMove = () =>
+      this.opts.http({
+        method: "MOVE",
+        url: this.urlFor(from),
+        headers: this.headers({ Destination: this.urlFor(to), Overwrite: "T" }),
+      });
+    let res = await doMove();
+    if (res.status === 409) {
+      // Stale folder cache (see write) — re-create the destination's parents once.
+      this.ensuredDirs.clear();
+      this.rootEnsured = false;
+      await this.ensureParents(to);
+      res = await doMove();
+    }
     if (res.status < 200 || res.status >= 300) {
       throw new Error(`WebDAV MOVE ${from} -> ${to} failed: HTTP ${res.status}`);
     }

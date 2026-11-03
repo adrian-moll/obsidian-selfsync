@@ -16,7 +16,7 @@ import { ConditionalWriteError, type StorageBackend } from "../backend/storage-b
 import type { StateStore } from "./state-db.js";
 import { reconcile } from "./reconciler.js";
 import { nextVersion, tombstone } from "./manifest.js";
-import { ManifestStore } from "./manifest-store.js";
+import { type ManifestCache, ManifestStore } from "./manifest-store.js";
 import type { BlobNaming } from "./naming.js";
 import type { BaseStore } from "./base-store.js";
 import { isMergeableText, mergeText } from "./merge.js";
@@ -33,6 +33,9 @@ export interface SyncDeps {
   naming: BlobNaming;
   /** Optional: last-synced content store enabling 3-way auto-merge of text. */
   baseStore?: BaseStore;
+  /** Optional: session cache of the last manifest seen, to skip re-downloading
+   *  an unchanged one. Must belong to this backend + layout. */
+  manifestCache?: ManifestCache;
 }
 
 export interface SyncOptions {
@@ -94,6 +97,10 @@ const mb = (bytes: number): string => (bytes / (1024 * 1024)).toFixed(1);
  */
 const DOWNLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
 
+/** Content blobs never need their new etag (only the manifest does) — saves a
+ *  round-trip per upload on WebDAV. */
+const BLOB_WRITE = { returnEtag: false } as const;
+
 /**
  * Device-local staging area for in-progress large downloads. Lives inside
  * SelfSync's own plugin folder, which is always excluded from sync
@@ -147,7 +154,19 @@ export async function scanVault(
   onSkipLarge?: (path: string, size: number) => void,
   onProgress?: (done: number, total: number) => void,
 ): Promise<Map<string, FileMeta>> {
-  const paths = await vault.list();
+  return scanPaths(vault, await vault.list(), base, exclude, maxFileBytes, onSkipLarge, onProgress);
+}
+
+/** {@link scanVault} over a given set of paths (missing ones are left out). */
+export async function scanPaths(
+  vault: VaultAdapter,
+  paths: string[],
+  base?: Map<string, { contentHash: string; size: number; mtime: number }>,
+  exclude: (path: string) => boolean = () => false,
+  maxFileBytes = 0,
+  onSkipLarge?: (path: string, size: number) => void,
+  onProgress?: (done: number, total: number) => void,
+): Promise<Map<string, FileMeta>> {
   const out = new Map<string, FileMeta>();
   const total = paths.length;
   let done = 0;
@@ -195,7 +214,7 @@ export class SyncEngine {
   private readonly manifests: ManifestStore;
 
   constructor(private readonly deps: SyncDeps) {
-    this.manifests = new ManifestStore(deps.backend, deps.deviceId, deps.naming.manifestKey);
+    this.manifests = new ManifestStore(deps.backend, deps.deviceId, deps.naming.manifestKey, deps.manifestCache);
   }
 
   async sync(opts: SyncOptions): Promise<SyncResult> {
@@ -209,7 +228,7 @@ export class SyncEngine {
     const phase = opts.onPhase ?? (() => {});
 
     phase("Loading remote index…");
-    let { manifest, etag } = await this.manifests.load();
+    const { manifest, etag } = await this.manifests.load();
     log(`manifest loaded: ${Object.keys(manifest.entries).length} entries`);
 
     // `maxFileBytes` caps only what we hold WHOLE in memory: uploads (scanned
@@ -256,7 +275,7 @@ export class SyncEngine {
     if (adopted) log(`adopted ${adopted} already-in-sync file(s) into the State DB`);
 
     phase("Reconciling…");
-    let ops = await reconcileAgainst(manifest);
+    const ops = await reconcileAgainst(manifest);
     log(`reconciled: ${ops.length} ops`);
 
     const outcomes: Outcomes = { merged: [], conflictCopies: [] };
@@ -275,6 +294,108 @@ export class SyncEngine {
 
     if (ops.length === 0) return result(false);
 
+    const conflict = await this.executeOps(ops, manifest, etag, {
+      maxFileBytes,
+      log,
+      onProgress: opts.onProgress,
+      outcomes,
+      appliedOps,
+      failed,
+      replan: reconcileAgainst,
+    });
+    return result(conflict);
+  }
+
+  /**
+   * Upload-only quick sync of the given paths — for the flush when the app is
+   * closed or backgrounded, where the OS allows only a few seconds. Instead of
+   * scanning the whole vault it looks at just these paths (the ones the file
+   * events reported), and it only PUSHES: uploads, remote deletes and renames.
+   * Anything that needs a download or a merge (the remote changed too) is left
+   * for the next full sync, as is the whole commit if another device wins the
+   * manifest race — on the way out there's no time to re-plan. With the
+   * manifest cached by etag, one edited note costs ~3 requests.
+   */
+  async pushLocalChanges(paths: Iterable<string>, opts: SyncOptions): Promise<SyncResult> {
+    const callerExclude = opts.exclude ?? (() => false);
+    const exclude = (p: string): boolean => p.startsWith(`${DOWNLOAD_STAGING_DIR}/`) || callerExclude(p);
+    const maxFileBytes = opts.maxFileBytes ?? 0;
+    const log = opts.log ?? (() => {});
+
+    const { manifest, etag } = await this.manifests.load();
+    const wanted = [...new Set(paths)].filter((p) => !exclude(p));
+    const skipped = new Set<string>();
+    const base = await this.deps.state.toMap();
+    const local = await scanPaths(
+      this.deps.vault,
+      wanted,
+      opts.useMtimeShortcut ? base : undefined,
+      exclude,
+      maxFileBytes,
+      (p) => skipped.add(p),
+    );
+    // Reconcile ONLY these paths: restrict all three sides to them, so every
+    // other file is simply absent from the plan.
+    const scope = new Set(wanted.filter((p) => !skipped.has(p)));
+    const remoteEntries: Record<string, ManifestEntry> = {};
+    for (const p of scope) if (manifest.entries[p]) remoteEntries[p] = manifest.entries[p];
+    const planned = reconcile(
+      {
+        local,
+        base: new Map([...base].filter(([p]) => scope.has(p))),
+        remote: { ...manifest, entries: remoteEntries },
+      },
+      { conflictCopyPath: (p) => conflictCopyPath(p, this.deps.deviceId, opts.timestampIso) },
+    );
+    const ops = planned.filter((op) => op.kind === "upload" || op.kind === "deleteRemote" || op.kind === "move");
+    log(`quick push: ${wanted.length} path(s), ${ops.length} op(s), ${planned.length - ops.length} left for a full sync`);
+
+    const outcomes: Outcomes = { merged: [], conflictCopies: [] };
+    const appliedOps: Op[] = [];
+    const failed: string[] = [];
+    const conflict =
+      ops.length > 0 &&
+      (await this.executeOps(ops, manifest, etag, {
+        maxFileBytes,
+        log,
+        onProgress: opts.onProgress,
+        outcomes,
+        appliedOps,
+        failed,
+        replan: null,
+      }));
+    return {
+      ops: appliedOps,
+      committed: appliedOps.length > 0,
+      conflict,
+      merged: outcomes.merged,
+      conflictCopies: outcomes.conflictCopies,
+      existingConflicts: [],
+      skippedLarge: [...skipped],
+      failed: [...new Set(failed)],
+    };
+  }
+
+  /**
+   * Apply `ops` and commit them to the manifest (with optimistic concurrency).
+   * On a lost manifest race, `replan` re-plans against the reloaded manifest;
+   * with no `replan` the attempt just ends. Returns whether it ended in a race.
+   */
+  private async executeOps(
+    ops: Op[],
+    manifest: Manifest,
+    etag: string | undefined,
+    run: {
+      maxFileBytes: number;
+      log: (msg: string) => void;
+      onProgress?: (done: number, total: number) => void;
+      outcomes: Outcomes;
+      appliedOps: Op[];
+      failed: string[];
+      replan: ((m: Manifest) => Promise<Op[]>) | null;
+    },
+  ): Promise<boolean> {
+    const { maxFileBytes, log, outcomes, appliedOps, failed } = run;
     // Commit the manifest in chunks so progress survives a mid-sync collision:
     // committed chunks update the State DB, so a conflict only re-does the
     // uncommitted remainder instead of the whole batch.
@@ -321,21 +442,21 @@ export class SyncEngine {
           failed.push(opLabel(op));
           log(`  ✗ ${opLabel(op)}: ${msg}`);
         }
-        opts.onProgress?.(chunkStart + i + 1, chunkTotal);
+        run.onProgress?.(chunkStart + i + 1, chunkTotal);
       }
 
       try {
         etag = await this.manifests.commit(manifest, etag);
       } catch (err) {
         if (err instanceof ConditionalWriteError) {
-          if (++conflictReloads > MAX_CONFLICT_RELOADS) return result(true);
+          if (!run.replan || ++conflictReloads > MAX_CONFLICT_RELOADS) return true;
           // Another device committed first — reload and re-plan the remaining
           // work against the fresh manifest (already-committed chunks are now in
           // the State DB, so they reconcile to no-ops).
           const reloaded = await this.manifests.load();
           manifest = reloaded.manifest;
           etag = reloaded.etag;
-          ops = await reconcileAgainst(manifest);
+          ops = await run.replan(manifest);
           continue;
         }
         throw err;
@@ -354,7 +475,7 @@ export class SyncEngine {
       log(`committed chunk: ${done}/${done + ops.length}`);
     }
 
-    return result(false);
+    return false;
   }
 
   /**
@@ -555,7 +676,7 @@ export class SyncEngine {
         const mtime = st?.mtime ?? 0;
         const blobKey = await this.deps.naming.blobKey(op.path);
         log(`  ↳ read ${mb(size)} MB; writing`);
-        await backend.write(blobKey, data);
+        await backend.write(blobKey, data, undefined, BLOB_WRITE);
         const version = nextVersion(working, op.path);
         working.entries[op.path] = { contentHash, version, blobKey, size, mtime, deleted: false };
         stateMutations.push(() => state.put({ path: op.path, contentHash, size, mtime, version, blobKey }));
@@ -623,7 +744,7 @@ export class SyncEngine {
               const size = st2?.size ?? mergedBuf.byteLength;
               const mtime = st2?.mtime ?? 0;
               const blobKey = await this.deps.naming.blobKey(op.path);
-              await backend.write(blobKey, mergedBuf);
+              await backend.write(blobKey, mergedBuf, undefined, BLOB_WRITE);
               const version = nextVersion(working, op.path);
               working.entries[op.path] = { contentHash, version, blobKey, size, mtime, deleted: false };
               stateMutations.push(() => state.put({ path: op.path, contentHash, size, mtime, version, blobKey }));
@@ -662,7 +783,7 @@ export class SyncEngine {
         const copyHash = await sha256(localData);
         const copyStat = await vault.stat(op.conflictCopyPath);
         const copyBlobKey = await this.deps.naming.blobKey(op.conflictCopyPath);
-        await backend.write(copyBlobKey, localData);
+        await backend.write(copyBlobKey, localData, undefined, BLOB_WRITE);
         const copyVersion = nextVersion(working, op.conflictCopyPath);
         working.entries[op.conflictCopyPath] = {
           contentHash: copyHash,
@@ -749,7 +870,7 @@ export class SyncEngine {
         const size = st?.size ?? buf.byteLength;
         const mtime = st?.mtime ?? 0;
         const blobKey = await this.deps.naming.blobKey(path);
-        await backend.write(blobKey, buf);
+        await backend.write(blobKey, buf, undefined, BLOB_WRITE);
         const version = nextVersion(working, path);
         working.entries[path] = { contentHash, version, blobKey, size, mtime, deleted: false };
         stateMutations.push(() => state.put({ path, contentHash, size, mtime, version, blobKey }));
@@ -768,7 +889,7 @@ export class SyncEngine {
       const contentHash = await sha256(localData);
       const size = st?.size ?? localData.byteLength;
       const blobKey = await this.deps.naming.blobKey(path);
-      await backend.write(blobKey, localData);
+      await backend.write(blobKey, localData, undefined, BLOB_WRITE);
       const version = nextVersion(working, path);
       working.entries[path] = { contentHash, version, blobKey, size, mtime: localMtime, deleted: false };
       stateMutations.push(() => state.put({ path, contentHash, size, mtime: localMtime, version, blobKey }));

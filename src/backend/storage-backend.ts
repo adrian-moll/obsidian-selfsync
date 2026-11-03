@@ -23,6 +23,11 @@ export interface ReadResult {
   etag?: string;
 }
 
+export interface WriteOptions {
+  /** Whether the caller needs the new etag back (default true). */
+  returnEtag?: boolean;
+}
+
 /** Thrown when a conditional write fails because the etag no longer matches. */
 export class ConditionalWriteError extends Error {
   constructor(public readonly key: string) {
@@ -55,9 +60,19 @@ export interface StorageBackend {
   /**
    * Store a blob. If `prevEtag` is provided and the backend supports conditional
    * writes, the write MUST fail (throw ConditionalWriteError) if the current
-   * etag differs. Returns the new etag.
+   * etag differs. Returns the new etag — unless `opts.returnEtag` is false: then
+   * a backend that needs an extra round-trip to learn it (WebDAV) may skip that
+   * and return "". Content blobs don't need their etag; the manifest does.
    */
-  write(key: string, data: ArrayBuffer, prevEtag?: string): Promise<string>;
+  write(key: string, data: ArrayBuffer, prevEtag?: string, opts?: WriteOptions): Promise<string>;
+  /**
+   * The current etag of a blob WITHOUT transferring it, or null if it doesn't
+   * exist (or the backend can't tell). Lets the manifest store skip
+   * re-downloading an unchanged manifest, and fetch the etag BEFORE the data so
+   * a concurrent change can never pair new content with an older etag (which
+   * would let a later conditional commit overwrite it). Optional.
+   */
+  etag?(key: string): Promise<string | null>;
   remove(key: string, prevEtag?: string): Promise<void>;
   /** Relocate a blob (server-side rename). Used for moves in both layouts. */
   move(from: string, to: string): Promise<void>;
@@ -113,6 +128,10 @@ export class MemoryBackend implements StorageBackend {
     const b = this.blobs.get(key);
     if (!b) throw new Error(`Not found: ${key}`);
     return b.data.slice(start, endInclusive + 1);
+  }
+
+  async etag(key: string): Promise<string | null> {
+    return this.blobs.get(key)?.etag ?? null;
   }
 
   async write(key: string, data: ArrayBuffer, prevEtag?: string): Promise<string> {

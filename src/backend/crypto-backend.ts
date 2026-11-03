@@ -26,7 +26,7 @@
  *   begins at header + k·(C+28) — that fixed stride is what makes a plaintext
  *   offset map to a frame in O(1). Empty plaintext (P=0) stores a header only.
  */
-import type { BackendCapabilities, ReadResult, RemoteEntry, StorageBackend } from "./storage-backend.js";
+import type { BackendCapabilities, ReadResult, RemoteEntry, StorageBackend, WriteOptions } from "./storage-backend.js";
 import { decryptGcm, encryptGcm, IV_BYTES, TAG_BYTES } from "../util/crypto.js";
 
 const MAGIC = "SSE1";
@@ -128,12 +128,17 @@ export class CryptoBackend implements StorageBackend {
   }
 
   // ---- encrypt on write --------------------------------------------------
-  async write(key: string, data: ArrayBuffer, prevEtag?: string): Promise<string> {
+  async write(key: string, data: ArrayBuffer, prevEtag?: string, opts?: WriteOptions): Promise<string> {
     const framed = await this.encryptFramed(data);
     this.headers.delete(key);
     // inner.write throws ConditionalWriteError on an etag mismatch, which
     // propagates untouched so the engine's concurrency-retry logic still sees it.
-    return this.inner.write(key, framed, prevEtag);
+    return this.inner.write(key, framed, prevEtag, opts);
+  }
+
+  /** The ciphertext blob's etag — it changes exactly when the plaintext does. */
+  etag(key: string): Promise<string | null> {
+    return this.inner.etag ? this.inner.etag(key) : Promise.resolve(null);
   }
 
   private async encryptFramed(plaintext: ArrayBuffer): Promise<ArrayBuffer> {
