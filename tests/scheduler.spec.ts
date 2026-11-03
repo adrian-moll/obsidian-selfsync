@@ -189,4 +189,80 @@ describe("SyncScheduler", () => {
     expect(d.calls).toBe(2);
     d.finishNext();
   });
+
+  it("runs a manual request that arrived mid-run back-to-back, not after the cooldown", async () => {
+    const d = deferredRun();
+    const timers = new FakeTimers();
+    timers.clock = 1_000_000;
+    const s = new SyncScheduler(d.run, timers);
+    s.setCooldownMs(60_000);
+
+    s.requestAuto("interval");
+    await flush();
+    void s.trigger("background"); // e.g. flush on backgrounding while a sync runs
+    d.finishNext();
+    await flush();
+    expect(d.labels).toEqual(["interval", "background"]); // no 60 s wait
+    d.finishNext();
+  });
+
+  it("a skipped run doesn't start the cooldown", async () => {
+    const timers = new FakeTimers();
+    timers.clock = 1_000_000;
+    const labels: string[] = [];
+    const s = new SyncScheduler(async (label) => {
+      labels.push(label);
+      return label === "echo" ? "skipped" : undefined;
+    }, timers);
+    s.setCooldownMs(60_000);
+
+    s.requestAuto("echo"); // skipped (nothing changed)
+    await flush();
+    s.requestAuto("change"); // a real edit right after → must not be deferred
+    await flush();
+    expect(labels).toEqual(["echo", "change"]);
+  });
+
+  it("requestIfStale runs only when the last sync is old enough", async () => {
+    const d = deferredRun();
+    const timers = new FakeTimers();
+    timers.clock = 1_000_000;
+    const s = new SyncScheduler(d.run, timers);
+    s.setCooldownMs(60_000);
+
+    s.requestIfStale("resume", 30_000); // never synced → runs
+    await flush();
+    expect(d.calls).toBe(1);
+    s.requestIfStale("resume", 30_000); // in flight → no-op (nothing queued)
+    d.finishNext();
+    await flush();
+    expect(d.calls).toBe(1);
+
+    timers.clock += 10_000;
+    s.requestIfStale("resume", 30_000); // synced 10 s ago → no-op
+    await flush();
+    expect(d.calls).toBe(1);
+
+    timers.clock += 25_000;
+    s.requestIfStale("resume", 30_000); // 35 s → runs, despite the 60 s cooldown
+    await flush();
+    expect(d.calls).toBe(2);
+    d.finishNext();
+  });
+
+  it("a change request doesn't displace a pending prompt retry", async () => {
+    const d = deferredRun();
+    const timers = new FakeTimers();
+    timers.clock = 1_000_000;
+    const s = new SyncScheduler(d.run, timers);
+    s.setCooldownMs(60_000);
+
+    s.requestDebounced("retry", 1500, true);
+    s.requestDebounced("change", 10_000); // must not replace or delay the retry
+    expect(timers.timeouts.size).toBe(1);
+    timers.advance(1500);
+    await flush();
+    expect(d.labels).toEqual(["retry"]);
+    d.finishNext();
+  });
 });

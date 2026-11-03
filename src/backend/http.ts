@@ -50,6 +50,53 @@ export const fetchHttp: HttpClient = async (req) => {
   return { status: res.status, headers, body };
 };
 
+/** Fixed part of every request's time budget (connect, server think time). */
+const TIMEOUT_BASE_MS = 60_000;
+/** Assumed worst-case throughput (a weak mobile link) for sizing the budget. */
+const TIMEOUT_MIN_BYTES_PER_SEC = 32 * 1024;
+/** Budget for a GET of unknown size (the manifest, a whole small blob). */
+const TIMEOUT_UNKNOWN_GET_MS = 5 * 60_000;
+
+/** The time budget for one request: a fixed base plus time for its payload. */
+export function requestTimeoutMs(req: HttpRequest): number {
+  let bytes = 0;
+  if (req.body !== undefined) {
+    bytes = typeof req.body === "string" ? req.body.length : req.body.byteLength;
+  } else if (req.method === "GET") {
+    const range = /bytes=(\d+)-(\d+)/.exec(req.headers?.Range ?? "");
+    if (!range) return TIMEOUT_UNKNOWN_GET_MS;
+    bytes = Number(range[2]) - Number(range[1]) + 1;
+  }
+  return TIMEOUT_BASE_MS + Math.ceil((bytes / TIMEOUT_MIN_BYTES_PER_SEC) * 1000);
+}
+
+/**
+ * Bound every request in time. Obsidian's requestUrl has no timeout, so a
+ * connection that stalls (typical when a phone switches networks) would hang
+ * the sync forever — and because syncs are single-flight, block every later
+ * sync until Obsidian restarts. requestUrl can't be aborted; we just stop
+ * waiting. The message is classified as transient (isTransientNetworkError),
+ * so the plugin backs off and retries quietly. A request that completes after
+ * we gave up is harmless: a blob is an orphan, a late manifest commit is
+ * adopted by the next sync.
+ */
+export function withTimeout(
+  http: HttpClient,
+  budgetMs: (req: HttpRequest) => number = requestTimeoutMs,
+): HttpClient {
+  return (req) => {
+    const ms = budgetMs(req);
+    let handle: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      handle = setTimeout(
+        () => reject(new Error(`${req.method} request timed out after ${Math.round(ms / 1000)} s`)),
+        ms,
+      );
+    });
+    return Promise.race([http(req), timeout]).finally(() => clearTimeout(handle));
+  };
+}
+
 /** Base64 (de)serialization of binary blobs — for backends that store JSON docs. */
 export function arrayBufferToBase64(buf: ArrayBuffer): string {
   const bytes = new Uint8Array(buf);

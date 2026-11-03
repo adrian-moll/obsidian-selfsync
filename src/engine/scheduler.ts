@@ -1,6 +1,6 @@
 /**
  * SyncScheduler — coalesces the M2 sync triggers (startup, interval,
- * debounced-on-change, best-effort quit/visibility flush) into a single-flight
+ * debounced-on-change, quit/background flush, resume) into a single-flight
  * runner (docs/05-sync-engine.md "Triggers", D5).
  *
  * Guarantees:
@@ -17,7 +17,10 @@
  *
  * Timers are injected so the logic is deterministically testable.
  */
-export type RunSync = (trigger: string) => Promise<void>;
+/** Resolves "skipped" when the run decided there was nothing to do — then it
+ *  doesn't count as a sync for the cooldown (a skipped echo mustn't delay a
+ *  real edit that follows it). */
+export type RunSync = (trigger: string) => Promise<void | "skipped">;
 
 export interface Timers {
   setTimeout(fn: () => void, ms: number): unknown;
@@ -39,7 +42,10 @@ export const realTimers: Timers = {
 export class SyncScheduler {
   private running = false;
   private pending: string | null = null;
+  /** Whether a coalesced pending request was a manual one (runs back-to-back). */
+  private pendingBypass = false;
   private debounceHandle: unknown = null;
+  private debounceBypass = false;
   private intervalHandle: unknown = null;
   private cooldownHandle: unknown = null;
   private lastRunEndAt = 0;
@@ -71,6 +77,7 @@ export class SyncScheduler {
   private async dispatch(label: string, bypassCooldown: boolean): Promise<void> {
     if (this.running) {
       this.pending = label;
+      this.pendingBypass ||= bypassCooldown;
       return;
     }
     if (!bypassCooldown && this.cooldownMs > 0) {
@@ -90,12 +97,14 @@ export class SyncScheduler {
       let next: string | null = label;
       while (next !== null) {
         this.pending = null;
-        await this.run(next);
-        this.lastRunEndAt = this.timers.now();
+        this.pendingBypass = false;
+        const outcome = await this.run(next);
+        if (outcome !== "skipped") this.lastRunEndAt = this.timers.now();
         next = this.pending;
-        // A trigger arrived mid-run: honor the cooldown before the trailing run
-        // instead of firing it back-to-back (the trailing run itself is auto).
-        if (next !== null && this.cooldownMs > 0) {
+        // An automatic trigger arrived mid-run: honor the cooldown before the
+        // trailing run instead of firing it back-to-back. A manual one (e.g. a
+        // flush on backgrounding) runs straight away — it can't wait.
+        if (next !== null && this.cooldownMs > 0 && !this.pendingBypass) {
           this.scheduleCooldownRun(next, this.cooldownMs);
           next = null;
         }
@@ -103,7 +112,20 @@ export class SyncScheduler {
     } finally {
       this.running = false;
       this.pending = null;
+      this.pendingBypass = false;
     }
+  }
+
+  /**
+   * Run now (bypassing the cooldown) if the last sync ended at least `minGapMs`
+   * ago; otherwise do nothing. For "the user is back" events (app resumed): the
+   * device may have missed remote changes while away, but a sync that just ran
+   * already covers them. A sync in flight also covers them, so it's a no-op then.
+   */
+  requestIfStale(label: string, minGapMs: number): void {
+    if (this.running) return;
+    if (this.timers.now() - this.lastRunEndAt < minGapMs) return;
+    void this.dispatch(label, true);
   }
 
   /** Schedule (once) a coalesced auto-run `wait` ms from now. */
@@ -118,9 +140,15 @@ export class SyncScheduler {
   /** Schedule a coalesced run after `delayMs` of quiet (resets on each call).
    *  Routes through the cooldown unless `bypassCooldown` (used for prompt retries). */
   requestDebounced(label: string, delayMs: number, bypassCooldown = false): void {
+    // A pending prompt retry (bypass) already covers an ordinary change request
+    // (every run does a full scan) — don't let the change push it back or
+    // replace it with a cooldown-limited run.
+    if (this.debounceHandle !== null && this.debounceBypass && !bypassCooldown) return;
     if (this.debounceHandle !== null) this.timers.clearTimeout(this.debounceHandle);
+    this.debounceBypass = bypassCooldown;
     this.debounceHandle = this.timers.setTimeout(() => {
       this.debounceHandle = null;
+      this.debounceBypass = false;
       void this.dispatch(label, bypassCooldown);
     }, delayMs);
   }

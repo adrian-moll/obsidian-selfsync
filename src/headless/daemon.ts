@@ -20,7 +20,7 @@ import { WebDavBackend } from "../backend/webdav-backend.js";
 import { encryptedContext } from "../backend/context.js";
 import { MissingPassphraseError, WrongPassphraseError } from "../backend/crypto-header.js";
 import { applyImportedConfig, ConfigVersionError } from "../backend/config-store.js";
-import { fetchHttp, utf8 } from "../backend/http.js";
+import { fetchHttp, utf8, withTimeout } from "../backend/http.js";
 import type { StorageBackend } from "../backend/storage-backend.js";
 import { NodeVaultAdapter } from "../vault/node-vault-adapter.js";
 import { NodeBaseStore } from "../vault/node-base-store.js";
@@ -110,7 +110,7 @@ export class SyncDaemon {
       username: w.username,
       password: w.password,
       rootDir: w.rootDir || "selfsync",
-      http: fetchHttp,
+      http: withTimeout(fetchHttp),
     });
   }
 

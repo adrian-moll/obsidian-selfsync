@@ -27,6 +27,7 @@ import { SyncEngine } from "./engine/engine.js";
 import { ManifestStore } from "./engine/manifest-store.js";
 import { cleanupExcluded } from "./engine/cleanup.js";
 import { SyncScheduler } from "./engine/scheduler.js";
+import { hasRealLocalChanges } from "./engine/dirty.js";
 import { type BlobNaming, MirrorNaming, OpaqueNaming } from "./engine/naming.js";
 import { encryptedContext } from "./backend/context.js";
 import { buildExcludePatterns, makeExcluder } from "./engine/exclude.js";
@@ -34,7 +35,7 @@ import { WebDavBackend } from "./backend/webdav-backend.js";
 import { CryptoBackend } from "./backend/crypto-backend.js";
 import { loadCryptoHeader, MissingPassphraseError, unlock, WrongPassphraseError } from "./backend/crypto-header.js";
 import { applyImportedConfig, buildExportConfig } from "./backend/config-store.js";
-import { utf8 } from "./backend/http.js";
+import { utf8, withTimeout } from "./backend/http.js";
 import { obsidianHttp } from "./backend/obsidian-http.js";
 import type { StorageBackend } from "./backend/storage-backend.js";
 import { decodeSecret, encodeSecret, type KeychainProvider } from "./util/secret-store.js";
@@ -55,6 +56,11 @@ const GIT_PUSH_THROTTLE_MS = 60_000;
 // background/visibility events fire constantly. See SyncScheduler.setCooldownMs.
 const AUTO_SYNC_COOLDOWN_DESKTOP_MS = 30_000;
 const AUTO_SYNC_COOLDOWN_MOBILE_MS = 60_000;
+// Returning to the app syncs right away (pulling what other devices changed)
+// unless a sync ended less than this long ago. Shorter on mobile, where a warm
+// resume otherwise waits for the next interval tick.
+const RESUME_MIN_GAP_DESKTOP_MS = 60_000;
+const RESUME_MIN_GAP_MOBILE_MS = 30_000;
 // Automatic Git backup (full-vault statusMatrix + commit) runs at most this
 // often. Only the PUSH was throttled before, so the expensive commit ran on
 // every WebDAV sync. Manual Git commands bypass this.
@@ -77,6 +83,9 @@ export default class SelfSyncPlugin extends Plugin {
   private lastGitPushAt = 0;
   private lastGitBackupAt = 0;
   private gitPushPending = false;
+  /** Paths the file events reported since the last sync started (possibly
+   *  SelfSync's own writes — see hasRealLocalChanges). */
+  private dirtyPaths = new Set<string>();
 
   async onload(): Promise<void> {
     await this.loadPersisted();
@@ -196,29 +205,55 @@ export default class SelfSyncPlugin extends Plugin {
     // Debounced on file change: sync only after editing has been quiet for
     // `changeDebounceSeconds` (configurable), then rate-limited by the scheduler
     // cooldown — so a long editing session doesn't sync on every brief pause.
-    const onChange = () => {
+    // Every event also records its path, so the "change" run can tell a real
+    // edit from SelfSync's own downloads (see runSync) and backgrounding knows
+    // whether there is anything to flush.
+    const onChange = (...paths: string[]) => {
+      for (const p of paths) this.dirtyPaths.add(p);
       if (this.settings.autoSyncEnabled && this.settings.syncOnFileChange) {
         this.scheduler.requestDebounced("change", Math.max(1, this.settings.changeDebounceSeconds) * 1000);
       }
     };
-    this.registerEvent(this.app.vault.on("modify", onChange));
-    this.registerEvent(this.app.vault.on("create", onChange));
-    this.registerEvent(this.app.vault.on("delete", onChange));
-    this.registerEvent(this.app.vault.on("rename", onChange));
+    this.registerEvent(this.app.vault.on("modify", (f) => onChange(f.path)));
+    this.registerEvent(this.app.vault.on("create", (f) => onChange(f.path)));
+    this.registerEvent(this.app.vault.on("delete", (f) => onChange(f.path)));
+    this.registerEvent(this.app.vault.on("rename", (f, oldPath) => onChange(f.path, oldPath)));
 
-    // Best-effort flush on quit / backgrounding — routed through the cooldown so
-    // rapid app-switch/visibility events on a phone collapse to at most one sync
-    // (convergence is still guaranteed by the startup + interval syncs). The
-    // desktop `window.blur` trigger was removed: it fired on trivial focus loss
-    // (command palette, clicking away) and added little the others don't cover.
-    this.registerEvent(
-      this.app.workspace.on("quit", () => {
-        if (this.settings.autoSyncEnabled) this.scheduler.requestAuto("quit");
-      }),
-    );
+    // Flush on quit / backgrounding: if there are unsynced local edits, sync NOW —
+    // bypassing the debounce and cooldown. A phone suspends a backgrounded app
+    // within seconds, so a deferred flush never ran and the edits waited for
+    // the next launch. With nothing to upload there's no point syncing on the
+    // way out. (The desktop `window.blur` trigger was removed earlier: it fired
+    // on trivial focus loss — command palette, clicking away.)
+    this.registerEvent(this.app.workspace.on("quit", () => void this.flushLocalChanges("quit")));
+    // Coming back (app resumed / window restored): pull what other devices
+    // changed meanwhile, instead of waiting for the next interval tick (timers
+    // don't run while a phone app is suspended).
+    const resumeGap = Platform.isDesktopApp ? RESUME_MIN_GAP_DESKTOP_MS : RESUME_MIN_GAP_MOBILE_MS;
     this.registerDomEvent(document, "visibilitychange", () => {
-      if (document.hidden && this.settings.autoSyncEnabled) this.scheduler.requestAuto("background");
+      if (!this.settings.autoSyncEnabled) return;
+      if (document.hidden) void this.flushLocalChanges("background");
+      else this.scheduler.requestIfStale("resume", resumeGap);
     });
+  }
+
+  /** Sync immediately if there are unsynced local changes (quit / backgrounding). */
+  private async flushLocalChanges(trigger: string): Promise<void> {
+    if (!this.settings.autoSyncEnabled) return;
+    if (!(await this.hasLocalChanges())) return;
+    this.scheduler.cancelDebounce(); // this run covers the pending debounced one
+    void this.scheduler.trigger(trigger);
+  }
+
+  /** Whether any path reported by file events differs from the last sync. */
+  private async hasLocalChanges(): Promise<boolean> {
+    if (this.dirtyPaths.size === 0) return false;
+    const lookup = (path: string) => {
+      const f = this.app.vault.getAbstractFileByPath(path);
+      return f instanceof TFile ? { size: f.stat.size, mtime: f.stat.mtime } : null;
+    };
+    const exclude = makeExcluder(buildExcludePatterns(this.settings));
+    return hasRealLocalChanges(this.dirtyPaths, lookup, this.stateStore, exclude);
   }
 
   /** Start or stop the periodic interval to match the current settings. */
@@ -513,7 +548,7 @@ export default class SelfSyncPlugin extends Plugin {
       username: w.username,
       password: w.password,
       rootDir: w.rootDir || "selfsync",
-      http: obsidianHttp,
+      http: withTimeout(obsidianHttp),
     });
   }
 
@@ -537,7 +572,7 @@ export default class SelfSyncPlugin extends Plugin {
   }
 
   /** One sync cycle, invoked only via the scheduler (single-flight). */
-  private async runSync(trigger: string): Promise<void> {
+  private async runSync(trigger: string): Promise<void | "skipped"> {
     const encrypted = this.settings.encryptionEnabled;
     const backend = this.buildBackend();
     if (!backend) {
@@ -545,6 +580,20 @@ export default class SelfSyncPlugin extends Plugin {
       if (trigger === "manual") new Notice("SelfSync: configure the backend in settings first.");
       return;
     }
+
+    // A file-change run whose events were only SelfSync's own writes (the files
+    // the previous sync downloaded) has nothing to do — skip it instead of
+    // re-scanning the vault and re-fetching the remote index.
+    if (trigger === "change" && !(await this.hasLocalChanges())) {
+      this.dirtyPaths.clear();
+      this.logger.debug("Change sync skipped — events were SelfSync's own writes");
+      return "skipped";
+    }
+    // This sync's full scan covers every path reported so far. Keep them if it
+    // doesn't complete, so a later flush on backgrounding still sees them.
+    const dirtyAtStart = [...this.dirtyPaths];
+    this.dirtyPaths.clear();
+    const keepDirty = () => dirtyAtStart.forEach((p) => this.dirtyPaths.add(p));
 
     this.store.update({
       status: "syncing",
@@ -614,6 +663,7 @@ export default class SelfSyncPlugin extends Plugin {
         } else {
           this.logger.warn("Still contended after 3 retries — will sync on next change");
         }
+        keepDirty();
         return;
       }
       this.conflictRetries = 0;
@@ -656,6 +706,7 @@ export default class SelfSyncPlugin extends Plugin {
       // Desktop-only Git backup after the vault has converged (no-op on mobile).
       if (this.settings.git.commitOnSync) void this.runGitBackup("after sync");
     } catch (e) {
+      keepDirty();
       const msg = e instanceof Error ? e.message : String(e);
       if (e instanceof WrongPassphraseError || e instanceof MissingPassphraseError) {
         // A key problem never resolves by retrying — surface it plainly on every
